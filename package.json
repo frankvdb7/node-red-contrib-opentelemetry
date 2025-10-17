@@ -18,7 +18,10 @@
     "metrics",
     "prometheus"
   ],
-  "author": "nioc <dev@nioc.eu>",
+  "contributors": [
+    "nioc <dev@nioc.eu>",
+    "frankvdb7 <5363672+frankvdb7@users.noreply.github.com>"
+  ],
   "license": "LGPL-3.0-or-later",
   "homepage": "https://github.com/frankvdb7/node-red-contrib-opentelemetry",
   "repository": {
