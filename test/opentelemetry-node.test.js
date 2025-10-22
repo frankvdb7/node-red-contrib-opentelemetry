@@ -14,6 +14,8 @@ const {
   setTimeout: setTimeoutMs,
   getMsgSpans,
   resetState,
+  logEvent,
+  setLogging,
 } = otelModule.__test__
 
 test.beforeEach(() => {
@@ -156,3 +158,62 @@ test('deleteOutdatedMsgSpans removes outdated entries', () => {
   assert.equal(parentSpan.ended, true)
   assert.ok(parentSpan.endTimestamp <= now - 100)
 })
+
+test('logEvent should not log when logging is disabled', () => {
+    setLogging(false);
+    const consoleLogSpy = test.mock.method(console, 'log');
+    logEvent({}, 'test', {});
+    assert.equal(consoleLogSpy.mock.calls.length, 0);
+});
+
+test('createSpan should handle various node types correctly', () => {
+    const tracer = {
+        startSpan: (name, options) => createFakeSpan(name, options)
+    };
+    const msg = { _msgid: '1', req: { headers: {} } };
+    const httpNode = { id: 'http-node', type: 'http in', name: 'HTTP In', z: 'flow' };
+    const tcpNode = { id: 'tcp-node', type: 'tcp in', name: 'TCP In', z: 'flow' };
+
+    createSpan(tracer, msg, httpNode, {}, false);
+    const httpSpans = getMsgSpans().get('1');
+    assert.ok(httpSpans.parentSpan);
+
+    createSpan(tracer, { _msgid: '2' }, tcpNode, {}, false);
+    const tcpSpans = getMsgSpans().get('2');
+    assert.ok(tcpSpans.parentSpan);
+});
+
+test('createSpan should extract trace context from different sources', () => {
+    const tracer = {
+        startSpan: (name, options) => createFakeSpan(name, options)
+    };
+    const mqttMsg = { _msgid: '3', userProperties: {} };
+    const mqttNode = { id: 'mqtt-node', type: 'mqtt in', name: 'MQTT In', z: 'flow' };
+    createSpan(tracer, mqttMsg, mqttNode, {}, false);
+    assert.ok(getMsgSpans().has('3'));
+
+    const amqpMsg = { _msgid: '4', properties: { headers: {} } };
+    const amqpNode = { id: 'amqp-node', type: 'amqp-in', name: 'AMQP In', z: 'flow' };
+    createSpan(tracer, amqpMsg, amqpNode, {}, false);
+    assert.ok(getMsgSpans().has('4'));
+});
+
+test('endSpan should handle http request and response correctly', () => {
+    const tracer = { startSpan: (name, options) => createFakeSpan(name, options) };
+    const msg = { _msgid: '1', statusCode: 200, responseUrl: 'http://example.com/test' };
+    const node = { id: 'node', type: 'http request', name: 'HTTP Request', z: 'flow' };
+    const childSpan = createSpan(tracer, { _msgid: '1' }, node, {}, false);
+    endSpan(msg, null, node);
+    assert.equal(childSpan.ended, true);
+    assert.deepEqual(childSpan.attributes['http.response.status_code'], 200);
+});
+
+test('endSpan should handle errors correctly', () => {
+    const tracer = { startSpan: (name, options) => createFakeSpan(name, options) };
+    const msg = { _msgid: '1', error: new Error('test error') };
+    const node = { id: 'node', type: 'function', name: 'Function', z: 'flow' };
+    const childSpan = createSpan(tracer, msg, node, {}, false);
+    const recordExceptionSpy = test.mock.method(childSpan, 'recordException');
+    endSpan(msg, 'error', node);
+    assert.equal(recordExceptionSpy.mock.calls.length, 1);
+});
