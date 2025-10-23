@@ -217,3 +217,183 @@ test('endSpan should handle errors correctly', () => {
     endSpan(msg, 'error', node);
     assert.equal(recordExceptionSpy.mock.calls.length, 1);
 });
+
+test('createSpan should handle websocket nodes correctly', () => {
+    const tracer = {
+        startSpan: (name, options) => createFakeSpan(name, options)
+    };
+    const wsInMsg = { _msgid: 'ws-in' };
+    const wsInNode = { id: 'ws-in-node', type: 'websocket in', name: 'WS In', z: 'flow', serverConfig: { path: '/ws/in' } };
+    createSpan(tracer, wsInMsg, wsInNode, {}, false);
+    const wsInSpans = getMsgSpans().get('ws-in');
+    assert.ok(wsInSpans.parentSpan);
+    assert.deepEqual(wsInSpans.parentSpan.attributes['url.path'], '/ws/in');
+
+    const wsOutMsg = { _msgid: 'ws-out' };
+    const wsOutNode = { id: 'ws-out-node', type: 'websocket out', name: 'WS Out', z: 'flow', serverConfig: { path: 'ws://localhost:1880/ws/out' } };
+    const wsOutSpan = createSpan(tracer, wsOutMsg, wsOutNode, {}, false);
+    assert.ok(wsOutSpan);
+    assert.deepEqual(wsOutSpan.attributes['url.path'], '/ws/out');
+    assert.deepEqual(wsOutSpan.attributes['server.address'], 'localhost');
+    assert.deepEqual(wsOutSpan.attributes['server.port'], '1880');
+    assert.deepEqual(wsOutSpan.attributes['url.scheme'], 'ws');
+});
+
+test('endSpan should set span status to ERROR on error', () => {
+    const tracer = {
+        startSpan: (name, options) => createFakeSpan(name, options)
+    };
+    const msg = { _msgid: '1' };
+    const node = { id: 'node', type: 'function', name: 'Function', z: 'flow' };
+    const childSpan = createSpan(tracer, msg, node, {}, false);
+    const setStatusSpy = test.mock.method(childSpan, 'setStatus');
+    const parentSpan = getMsgSpans().get('1').parentSpan;
+    const parentSetStatusSpy = test.mock.method(parentSpan, 'setStatus');
+    endSpan(msg, new Error('test error'), node);
+    assert.equal(setStatusSpy.mock.calls.length, 1);
+    assert.deepEqual(setStatusSpy.mock.calls[0].arguments[0].code, 2); // 2 = ERROR
+    assert.equal(parentSetStatusSpy.mock.calls.length, 1);
+});
+
+test('postDeliver.otel hook injects trace context for http and mqtt', async (t) => {
+    let NodeConstructor;
+    const mockRed = {
+        nodes: {
+            createNode: function (node, config) { Object.assign(node, config); },
+            registerType: (name, constructor) => { NodeConstructor = constructor; }
+        },
+        hooks: {
+            listeners: {},
+            add: function (name, listener) { this.listeners[name] = listener; },
+            remove: function (pattern) {
+                Object.keys(this.listeners)
+                    .filter(name => name.endsWith(pattern.substring(1)))
+                    .forEach(name => delete this.listeners[name]);
+            }
+        }
+    };
+
+    otelModule(mockRed);
+
+    let closeHandler;
+    const nodeInstance = {
+        on: (event, handler) => {
+            if (event === 'close') closeHandler = handler;
+        },
+        status: () => {}
+    };
+
+    const config = {
+        url: 'http://localhost:4318/v1/traces',
+        protocol: 'http',
+        serviceName: 'test-service',
+        rootPrefix: '',
+        ignoredTypes: '',
+        propagateHeadersTypes: 'http request,mqtt out',
+        isLogging: false,
+        timeout: 10,
+        attributeMappings: []
+    };
+
+    NodeConstructor.call(nodeInstance, config);
+
+    const postDeliverListener = mockRed.hooks.listeners['postDeliver.otel'];
+    assert.ok(postDeliverListener);
+
+    // Test http request
+    const httpSendEvent = {
+        msg: { _msgid: 'http-msg' },
+        source: { node: { id: 'source-node', type: 'function' } },
+        destination: { node: { id: 'dest-node', type: 'http request' } }
+    };
+    postDeliverListener(httpSendEvent);
+    assert.ok(httpSendEvent.msg.headers, 'headers should be present');
+    assert.ok(httpSendEvent.msg.headers.traceparent, 'traceparent header should be injected');
+
+    // Test mqtt out
+    const mqttSendEvent = {
+        msg: { _msgid: 'mqtt-msg' },
+        source: { node: { id: 'source-node', type: 'function' } },
+        destination: { node: { id: 'dest-node', type: 'mqtt out' } }
+    };
+    postDeliverListener(mqttSendEvent);
+    assert.ok(mqttSendEvent.msg.userProperties, 'userProperties should be present');
+    assert.ok(mqttSendEvent.msg.userProperties.traceparent, 'traceparent should be in userProperties');
+
+    // Test non-propagated type
+    const functionSendEvent = {
+        msg: { _msgid: 'func-msg' },
+        source: { node: { id: 'source-node', type: 'function' } },
+        destination: { node: { id: 'dest-node', type: 'function' } }
+    };
+    postDeliverListener(functionSendEvent);
+    assert.equal(functionSendEvent.msg.headers, undefined, 'headers should not be added');
+
+    // cleanup
+    await closeHandler.call(nodeInstance);
+});
+
+test('onReceive.otel hook sets otelRootMsgId for split nodes', () => {
+    let NodeConstructor;
+    const mockRed = {
+        nodes: {
+            createNode: function (node, config) { Object.assign(node, config); },
+            registerType: (name, constructor) => { NodeConstructor = constructor; }
+        },
+        hooks: {
+            listeners: {},
+            add: function (name, listener) { this.listeners[name] = listener; },
+            remove: () => {}
+        }
+    };
+    otelModule(mockRed);
+
+    const nodeInstance = { on: () => {}, status: () => {} };
+    const config = {
+        url: 'http://localhost:4318/v1/traces',
+        ignoredTypes: '',
+        propagateHeadersTypes: ''
+    };
+    NodeConstructor.call(nodeInstance, config);
+
+    const onReceiveListener = mockRed.hooks.listeners['onReceive.otel'];
+    assert.ok(onReceiveListener, 'onReceive.otel listener should be registered');
+
+    const splitEvent = {
+        msg: { _msgid: 'original-msg-id' },
+        destination: { node: { id: 'split-node', type: 'split' } }
+    };
+    onReceiveListener(splitEvent);
+    assert.equal(splitEvent.msg.otelRootMsgId, 'original-msg-id');
+
+    const otherEvent = {
+        msg: { _msgid: 'other-msg-id' },
+        destination: { node: { id: 'other-node', type: 'function' } }
+    };
+    onReceiveListener(otherEvent);
+    assert.equal(otherEvent.msg.otelRootMsgId, undefined);
+});
+
+test('endSpan should handle orphan spans from switch nodes', () => {
+    const tracer = {
+        startSpan: (name, options) => createFakeSpan(name, options)
+    };
+    const msg = { _msgid: '1' };
+    const switchNode = { id: 'switch-node', type: 'switch', name: 'Switch', z: 'flow' };
+    const functionNode = { id: 'function-node', type: 'function', name: 'Function', z: 'flow' };
+
+    // Create a parent span and a switch span
+    createSpan(tracer, msg, switchNode, {}, false);
+    const parent = getMsgSpans().get('1');
+    assert.ok(parent);
+
+    // Create a function span that will be ended
+    const functionSpan = createSpan(tracer, msg, functionNode, {}, false);
+    assert.ok(functionSpan);
+
+    // End the function span. This should trigger the orphan logic for the switch span.
+    endSpan(msg, null, functionNode);
+
+    // The parent span should be ended because the only remaining child is an orphan
+    assert.equal(getMsgSpans().size, 0);
+});
