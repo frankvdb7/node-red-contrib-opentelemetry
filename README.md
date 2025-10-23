@@ -126,3 +126,7 @@ See also the full list of [contributors](https://github.com/nioc/node-red-contri
 ## License
 
 This project is licensed under the GNU Lesser General Public License v3.0 - see the [LICENSE](LICENSE.md) file for details
+
+# Node-RED OpenTelemetry and Prometheus Module
+
+This is a Node-RED module for instrumenting flows with OpenTelemetry and exposing metrics in the Prometheus format.
