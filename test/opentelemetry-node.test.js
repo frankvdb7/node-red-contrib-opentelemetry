@@ -502,6 +502,66 @@ test("onReceive.otel hook sets otelRootMsgId for split nodes", () => {
 	assert.equal(otherEvent.msg.otelRootMsgId, undefined);
 });
 
+test("onSend.otel hook creates spans for every event in batch", async () => {
+	let NodeConstructor;
+	const mockRed = {
+		nodes: {
+			createNode: function (node, config) {
+				Object.assign(node, config);
+			},
+			registerType: (_name, constructor) => {
+				NodeConstructor = constructor;
+			},
+		},
+		hooks: {
+			listeners: {},
+			add: function (name, listener) {
+				this.listeners[name] = listener;
+			},
+			remove: function (_pattern) {},
+		},
+	};
+	otelModule(mockRed);
+
+	let closeHandler;
+	const nodeInstance = {
+		on: (event, handler) => {
+			if (event === "close") closeHandler = handler;
+		},
+		status: () => {},
+	};
+
+	NodeConstructor.call(nodeInstance, {
+		url: "http://localhost:4318/v1/traces",
+		protocol: "http",
+		serviceName: "test-service",
+		rootPrefix: "",
+		ignoredTypes: "",
+		propagateHeadersTypes: "",
+		isLogging: false,
+		timeout: 10,
+		attributeMappings: [],
+	});
+
+	const onSendListener = mockRed.hooks.listeners["onSend.otel"];
+	assert.ok(onSendListener);
+
+	onSendListener([
+		{
+			msg: { _msgid: "a" },
+			source: { node: { id: "node-a", type: "function", z: "flow-a" } },
+		},
+		{
+			msg: { _msgid: "b" },
+			source: { node: { id: "node-b", type: "function", z: "flow-b" } },
+		},
+	]);
+
+	assert.equal(getMsgSpans().size, 2);
+
+	await closeHandler.call(nodeInstance);
+});
+
 test("endSpan should handle orphan spans from switch nodes", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
