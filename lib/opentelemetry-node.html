@@ -35,7 +35,6 @@ RED.nodes.registerType('OpenTelemetry', {
       required: true,
       validate: function (v) {
         try {
-          // eslint-disable-next-line no-new
           new URL(v)
           return true
         } catch (err) {

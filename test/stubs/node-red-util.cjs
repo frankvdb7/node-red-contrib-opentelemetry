@@ -1,7 +1,7 @@
 module.exports = {
-  log: {
-    log: () => {},
-    INFO: 'info',
-    ERROR: 'error',
-  },
+	log: {
+		log: () => {},
+		INFO: "info",
+		ERROR: "error",
+	},
 };
