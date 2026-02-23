@@ -14,7 +14,6 @@ RED.nodes.registerType('Prometheus Exporter', {
       required: true,
       validate: function (v) {
         try {
-          // eslint-disable-next-line no-new
           new URL(`http://localhost:1881${v}`)
           return true
         } catch (err) {
