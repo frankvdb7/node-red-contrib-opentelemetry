@@ -582,7 +582,7 @@ test("onReceive.otel hook sets otelRootMsgId for split nodes", () => {
 	assert.equal(otherEvent.msg.otelRootMsgId, undefined);
 });
 
-test("node constructor handles missing optional csv config fields", () => {
+test("node constructor applies defaults for missing optional config", async () => {
 	let NodeConstructor;
 	const mockRed = {
 		nodes: {
@@ -594,14 +594,20 @@ test("node constructor handles missing optional csv config fields", () => {
 			},
 		},
 		hooks: {
-			add: () => {},
+			listeners: {},
+			add: function (name, listener) {
+				this.listeners[name] = listener;
+			},
 			remove: () => {},
 		},
 	};
 	otelModule(mockRed);
 
+	let closeHandler;
 	const nodeInstance = {
-		on: () => {},
+		on: (event, handler) => {
+			if (event === "close") closeHandler = handler;
+		},
 		status: () => {},
 	};
 
@@ -610,6 +616,41 @@ test("node constructor handles missing optional csv config fields", () => {
 			url: "http://localhost:4318/v1/traces",
 		});
 	});
+
+	assert.equal(
+		parseAttribute(false, { payload: "value" }, "flow", "function"),
+		undefined,
+	);
+
+	const startedSpans = [];
+	const tracer = {
+		startSpan: (name, options) => {
+			const span = createFakeSpan(name, options);
+			startedSpans.push(span);
+			return span;
+		},
+	};
+	createSpan(
+		tracer,
+		{ _msgid: "defaults-msg" },
+		{ id: "node", type: "function", name: "Function", z: "flow" },
+		{},
+		false,
+	);
+	assert.equal(startedSpans[0].name, "Message Function");
+
+	const parentSpan = createFakeSpan("parent");
+	const spans = getMsgSpans();
+	spans.set("stale-msg", {
+		parentSpan,
+		spans: new Map(),
+		updateTimestamp: Date.now() - 15_000,
+	});
+	deleteOutdatedMsgSpans();
+	assert.equal(spans.has("stale-msg"), false);
+	assert.equal(parentSpan.ended, true);
+
+	await closeHandler.call(nodeInstance);
 });
 
 test("onSend.otel hook creates spans for every event in batch", async () => {
