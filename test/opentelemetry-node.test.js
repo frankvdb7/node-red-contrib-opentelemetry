@@ -139,6 +139,16 @@ test("parseAttribute ignores non primitive results", () => {
 	assert.deepEqual(attributes, {});
 });
 
+test("parseAttribute ignores mappings with blank key or path", () => {
+	setAttributeMappings([
+		{ flow: "", nodeType: "", isAfter: false, key: "", path: "foo" },
+		{ flow: "", nodeType: "", isAfter: false, key: "valid", path: "foo" },
+		{ flow: "", nodeType: "", isAfter: false, key: "ignored", path: " " },
+	]);
+	const attributes = parseAttribute(false, { foo: "value" }, "flow", "type");
+	assert.deepEqual(attributes, { valid: "value" });
+});
+
 test("createSpan creates parent and child spans for new messages", () => {
 	const startedSpans = [];
 	const tracer = {
@@ -455,6 +465,76 @@ test("postDeliver.otel hook injects trace context for http and mqtt", async (t) 
 	await closeHandler.call(nodeInstance);
 });
 
+test("preDeliver.otel hook clears all propagated trace headers safely", () => {
+	let NodeConstructor;
+	const mockRed = {
+		nodes: {
+			createNode: function (node, config) {
+				Object.assign(node, config);
+			},
+			registerType: (_name, constructor) => {
+				NodeConstructor = constructor;
+			},
+		},
+		hooks: {
+			listeners: {},
+			add: function (name, listener) {
+				this.listeners[name] = listener;
+			},
+			remove: () => {},
+		},
+	};
+
+	otelModule(mockRed);
+
+	const nodeInstance = {
+		on: () => {},
+		status: () => {},
+	};
+	NodeConstructor.call(nodeInstance, {
+		url: "http://localhost:4318/v1/traces",
+		protocol: "http",
+		serviceName: "test-service",
+		rootPrefix: "",
+		ignoredTypes: "",
+		propagateHeadersTypes: "function",
+		isLogging: false,
+		timeout: 10,
+		attributeMappings: [],
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: {
+			headers: {
+				traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+				tracestate: "vendor=value",
+				baggage: "k=v",
+				"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
+				"x-b3-spanid": "e457b5a2e4d86bd1",
+				"x-b3-sampled": "1",
+			},
+		},
+	};
+	preDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.headers.traceparent, undefined);
+	assert.equal(sendEvent.msg.headers.tracestate, undefined);
+	assert.equal(sendEvent.msg.headers.baggage, undefined);
+	assert.equal(sendEvent.msg.headers["x-b3-traceid"], undefined);
+	assert.equal(sendEvent.msg.headers["x-b3-spanid"], undefined);
+	assert.equal(sendEvent.msg.headers["x-b3-sampled"], undefined);
+
+	const noHeadersEvent = {
+		source: { node: { type: "function" } },
+		msg: {},
+	};
+	assert.doesNotThrow(() => preDeliverListener(noHeadersEvent));
+	assert.deepEqual(noHeadersEvent.msg.headers, {});
+});
+
 test("onReceive.otel hook sets otelRootMsgId for split nodes", () => {
 	let NodeConstructor;
 	const mockRed = {
@@ -530,6 +610,66 @@ test("node constructor handles missing optional csv config fields", () => {
 			url: "http://localhost:4318/v1/traces",
 		});
 	});
+});
+
+test("onSend.otel hook creates spans for every event in batch", async () => {
+	let NodeConstructor;
+	const mockRed = {
+		nodes: {
+			createNode: function (node, config) {
+				Object.assign(node, config);
+			},
+			registerType: (_name, constructor) => {
+				NodeConstructor = constructor;
+			},
+		},
+		hooks: {
+			listeners: {},
+			add: function (name, listener) {
+				this.listeners[name] = listener;
+			},
+			remove: function (_pattern) {},
+		},
+	};
+	otelModule(mockRed);
+
+	let closeHandler;
+	const nodeInstance = {
+		on: (event, handler) => {
+			if (event === "close") closeHandler = handler;
+		},
+		status: () => {},
+	};
+
+	NodeConstructor.call(nodeInstance, {
+		url: "http://localhost:4318/v1/traces",
+		protocol: "http",
+		serviceName: "test-service",
+		rootPrefix: "",
+		ignoredTypes: "",
+		propagateHeadersTypes: "",
+		isLogging: false,
+		timeout: 10,
+		attributeMappings: [],
+	});
+
+	const onSendListener = mockRed.hooks.listeners["onSend.otel"];
+	assert.ok(onSendListener);
+
+	onSendListener([
+		{
+			msg: { _msgid: "a" },
+			source: { node: { id: "node-a", type: "function", z: "flow-a" } },
+		},
+		{
+			msg: { _msgid: "b" },
+			source: { node: { id: "node-b", type: "function", z: "flow-b" } },
+		},
+	]);
+
+	assert.equal(getMsgSpans().size, 2);
+
+	await closeHandler.call(nodeInstance);
 });
 
 test("endSpan should handle orphan spans from switch nodes", () => {
