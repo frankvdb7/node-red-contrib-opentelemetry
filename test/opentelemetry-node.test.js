@@ -502,6 +502,36 @@ test("onReceive.otel hook sets otelRootMsgId for split nodes", () => {
 	assert.equal(otherEvent.msg.otelRootMsgId, undefined);
 });
 
+test("node constructor handles missing optional csv config fields", () => {
+	let NodeConstructor;
+	const mockRed = {
+		nodes: {
+			createNode: function (node, config) {
+				Object.assign(node, config);
+			},
+			registerType: (_name, constructor) => {
+				NodeConstructor = constructor;
+			},
+		},
+		hooks: {
+			add: () => {},
+			remove: () => {},
+		},
+	};
+	otelModule(mockRed);
+
+	const nodeInstance = {
+		on: () => {},
+		status: () => {},
+	};
+
+	assert.doesNotThrow(() => {
+		NodeConstructor.call(nodeInstance, {
+			url: "http://localhost:4318/v1/traces",
+		});
+	});
+});
+
 test("endSpan should handle orphan spans from switch nodes", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
