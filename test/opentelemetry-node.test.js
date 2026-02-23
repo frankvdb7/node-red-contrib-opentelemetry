@@ -139,6 +139,16 @@ test("parseAttribute ignores non primitive results", () => {
 	assert.deepEqual(attributes, {});
 });
 
+test("parseAttribute ignores mappings with blank key or path", () => {
+	setAttributeMappings([
+		{ flow: "", nodeType: "", isAfter: false, key: "", path: "foo" },
+		{ flow: "", nodeType: "", isAfter: false, key: "valid", path: "foo" },
+		{ flow: "", nodeType: "", isAfter: false, key: "ignored", path: " " },
+	]);
+	const attributes = parseAttribute(false, { foo: "value" }, "flow", "type");
+	assert.deepEqual(attributes, { valid: "value" });
+});
+
 test("createSpan creates parent and child spans for new messages", () => {
 	const startedSpans = [];
 	const tracer = {
