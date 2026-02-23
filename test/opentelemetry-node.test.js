@@ -16,14 +16,28 @@ const {
 	resetState,
 	logEvent,
 	setLogging,
+	resolveOpenTelemetryConfig,
 } = otelModule.__test__;
+
+const originalEnv = { ...process.env };
+
+function resetEnv() {
+	for (const key of Object.keys(process.env)) {
+		if (!(key in originalEnv)) {
+			delete process.env[key];
+		}
+	}
+	Object.assign(process.env, originalEnv);
+}
 
 test.beforeEach(() => {
 	resetState();
+	resetEnv();
 });
 
 test.afterEach(() => {
 	resetState();
+	resetEnv();
 });
 
 function createFakeSpan(name, options = {}) {
@@ -147,6 +161,46 @@ test("parseAttribute ignores mappings with blank key or path", () => {
 	]);
 	const attributes = parseAttribute(false, { foo: "value" }, "flow", "type");
 	assert.deepEqual(attributes, { valid: "value" });
+});
+
+test("resolveOpenTelemetryConfig reads OTEL env values when node uses defaults", () => {
+	process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
+	process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
+	process.env.OTEL_SERVICE_NAME = "env-service";
+	const config = resolveOpenTelemetryConfig({
+		url: "http://localhost:4318/v1/traces",
+		protocol: "http",
+		serviceName: "Node-RED",
+	});
+	assert.equal(config.url, "http://collector:4318/v1/traces");
+	assert.equal(config.protocol, "proto");
+	assert.equal(config.serviceName, "env-service");
+});
+
+test("resolveOpenTelemetryConfig keeps explicit node settings over env values", () => {
+	process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT =
+		"http://collector:4318/v1/traces";
+	process.env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL = "http/json";
+	process.env.OTEL_SERVICE_NAME = "env-service";
+	const config = resolveOpenTelemetryConfig({
+		url: "http://custom:4318/v1/traces",
+		protocol: "proto",
+		serviceName: "custom-service",
+	});
+	assert.equal(config.url, "http://custom:4318/v1/traces");
+	assert.equal(config.protocol, "proto");
+	assert.equal(config.serviceName, "custom-service");
+});
+
+test("resolveOpenTelemetryConfig supports trace-specific env overrides", () => {
+	process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://generic:4318";
+	process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT =
+		"http://trace-specific:4318/custom";
+	process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "http/json";
+	process.env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL = "http/protobuf";
+	const config = resolveOpenTelemetryConfig({});
+	assert.equal(config.url, "http://trace-specific:4318/custom");
+	assert.equal(config.protocol, "proto");
 });
 
 test("createSpan creates parent and child spans for new messages", () => {

@@ -85,6 +85,13 @@ As with every [node installation](https://nodered.org/docs/user-guide/runtime/ad
   - define time in seconds after which an unmodified message will be ended and deleted,
   - define custom attributes you want to send (optionally).
 
+OpenTelemetry environment variables are also supported:
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT` as fallback) for exporter URL,
+- `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` (or `OTEL_EXPORTER_OTLP_PROTOCOL`) for protocol (`http/json` or `http/protobuf`),
+- `OTEL_SERVICE_NAME` for service name.
+
+Environment values are used when the node keeps its default values for URL/protocol/service name. Explicit node settings still win.
+
 ### Metrics
 
 - Add Prometheus node **once** (to any flow),
