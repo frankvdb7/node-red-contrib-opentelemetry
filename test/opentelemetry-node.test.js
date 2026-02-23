@@ -465,6 +465,76 @@ test("postDeliver.otel hook injects trace context for http and mqtt", async (t) 
 	await closeHandler.call(nodeInstance);
 });
 
+test("preDeliver.otel hook clears all propagated trace headers safely", () => {
+	let NodeConstructor;
+	const mockRed = {
+		nodes: {
+			createNode: function (node, config) {
+				Object.assign(node, config);
+			},
+			registerType: (_name, constructor) => {
+				NodeConstructor = constructor;
+			},
+		},
+		hooks: {
+			listeners: {},
+			add: function (name, listener) {
+				this.listeners[name] = listener;
+			},
+			remove: () => {},
+		},
+	};
+
+	otelModule(mockRed);
+
+	const nodeInstance = {
+		on: () => {},
+		status: () => {},
+	};
+	NodeConstructor.call(nodeInstance, {
+		url: "http://localhost:4318/v1/traces",
+		protocol: "http",
+		serviceName: "test-service",
+		rootPrefix: "",
+		ignoredTypes: "",
+		propagateHeadersTypes: "function",
+		isLogging: false,
+		timeout: 10,
+		attributeMappings: [],
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: {
+			headers: {
+				traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+				tracestate: "vendor=value",
+				baggage: "k=v",
+				"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
+				"x-b3-spanid": "e457b5a2e4d86bd1",
+				"x-b3-sampled": "1",
+			},
+		},
+	};
+	preDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.headers.traceparent, undefined);
+	assert.equal(sendEvent.msg.headers.tracestate, undefined);
+	assert.equal(sendEvent.msg.headers.baggage, undefined);
+	assert.equal(sendEvent.msg.headers["x-b3-traceid"], undefined);
+	assert.equal(sendEvent.msg.headers["x-b3-spanid"], undefined);
+	assert.equal(sendEvent.msg.headers["x-b3-sampled"], undefined);
+
+	const noHeadersEvent = {
+		source: { node: { type: "function" } },
+		msg: {},
+	};
+	assert.doesNotThrow(() => preDeliverListener(noHeadersEvent));
+	assert.deepEqual(noHeadersEvent.msg.headers, {});
+});
+
 test("onReceive.otel hook sets otelRootMsgId for split nodes", () => {
 	let NodeConstructor;
 	const mockRed = {
