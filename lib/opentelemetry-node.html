@@ -74,16 +74,16 @@ RED.nodes.registerType('OpenTelemetry', {
         }
         const errors = []
         attributeMappings.forEach((attributeMapping) => {
-          if (attributeMapping.key === '') {
+          if (!attributeMapping || String(attributeMapping.key ?? '').trim() === '') {
             errors.push('OTEL key must be a non-null string')
           }
-          if (attributeMapping.path === '') {
+          if (!attributeMapping || String(attributeMapping.path ?? '').trim() === '') {
             errors.push('Path must be a non-null string')
           }
         })
         if (errors.length) {
           console.warn(errors.join(', '))
-          return errors
+          return false
         }
         return true
       },
