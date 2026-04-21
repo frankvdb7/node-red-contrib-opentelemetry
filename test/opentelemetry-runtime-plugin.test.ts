@@ -777,6 +777,47 @@ test("createSpan resolves subflow and flow names from RED.nodes.getFlows()", () 
 	assert.equal(span.attributes["node_red.flow.name"], "Orders Flow");
 });
 
+test("createSpan resolves subflow and flow names from runtime node internals", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const redWithRuntimeNodeInternals = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "subflow-instance-node") {
+					return {
+						name: "Subflow Instance Node",
+						_flow: {
+							label: "Runtime Flow Label",
+							subflow: { name: "Runtime Subflow Name" },
+						},
+						_def: { label: "Runtime Definition Label" },
+					};
+				}
+				return undefined;
+			},
+			getFlows: () => undefined,
+		},
+	};
+	const msg = { _msgid: "runtime-internals-subflow-msg" };
+	const span = createSpan(
+		redWithRuntimeNodeInternals,
+		tracer,
+		msg,
+		{
+			id: "subflow-instance-node",
+			type: "subflow:unknown-template-id",
+			z: "missing-flow-id",
+		},
+		{},
+		false,
+	);
+	assert.ok(span);
+	assert.equal(span.name, "subflow:unknown-template-id Runtime Subflow Name");
+	assert.equal(span.attributes["node_red.node.name"], "Runtime Subflow Name");
+	assert.equal(span.attributes["node_red.flow.name"], "Runtime Flow Label");
+});
+
 test("createSpan uses active subflow span as parent context for nested node spans", () => {
 	const calls = [];
 	const tracer = {
@@ -997,6 +1038,40 @@ test("endSpan should handle http request and response correctly", () => {
 	endSpan(mockRed, msg, null, node);
 	assert.equal(childSpan.ended, true);
 	assert.deepEqual(childSpan.attributes["http.response.status_code"], 200);
+});
+
+test("endSpan resolves flow name from runtime node internals when flow lookup is unavailable", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const redWithRuntimeNodeInternals = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "runtime-node") {
+					return { _flow: { name: "Runtime Flow Name" } };
+				}
+				return undefined;
+			},
+			getFlows: () => undefined,
+		},
+	};
+	const msg = { _msgid: "runtime-flow-end-msg" };
+	const node = {
+		id: "runtime-node",
+		type: "function",
+		name: "Function",
+		z: "missing-flow-id",
+	};
+	const childSpan = createSpan(
+		redWithRuntimeNodeInternals,
+		tracer,
+		msg,
+		node,
+		{},
+		false,
+	);
+	endSpan(redWithRuntimeNodeInternals, msg, null, node);
+	assert.equal(childSpan.attributes["node_red.flow.name"], "Runtime Flow Name");
 });
 
 test("endSpan auto-applies client HTTP response attributes for unknown node", () => {
