@@ -1409,7 +1409,7 @@ function extractIncomingContext(
 			defaultTextMapGetter,
 		);
 	}
-	if (nodeDefinition.type === "amqp-in") {
+	if (nodeDefinition.type === "amqp-in" || nodeDefinition.type === "amqp-in-manual-ack") {
 		return propagator.extract(
 			context.active(),
 			msg.properties?.headers ?? {},
