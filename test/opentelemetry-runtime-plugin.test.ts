@@ -743,6 +743,40 @@ test("createSpan includes subflow name when subflow node type is used", () => {
 	assert.equal(span.attributes["node_red.node.name"], "My Subflow");
 });
 
+test("createSpan resolves subflow and flow names from RED.nodes.getFlows()", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const redWithFlowConfig = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [
+					{ id: "flow-tab-id", type: "tab", label: "Orders Flow" },
+					{ id: "subflow-template-id", type: "subflow", name: "Retry Wrapper" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "flow-config-subflow-msg" };
+	const span = createSpan(
+		redWithFlowConfig,
+		tracer,
+		msg,
+		{
+			id: "subflow-instance-node",
+			type: "subflow:subflow-template-id",
+			z: "flow-tab-id",
+		},
+		{},
+		false,
+	);
+	assert.ok(span);
+	assert.equal(span.name, "subflow:subflow-template-id Retry Wrapper");
+	assert.equal(span.attributes["node_red.node.name"], "Retry Wrapper");
+	assert.equal(span.attributes["node_red.flow.name"], "Orders Flow");
+});
+
 test("createSpan uses active subflow span as parent context for nested node spans", () => {
 	const calls = [];
 	const tracer = {
