@@ -66,6 +66,7 @@ module.exports = {
     logsUrl: "http://localhost:4318/v1/logs",
     protocol: "http", // "http" (json) or "proto" (protobuf)
     serviceName: "Node-RED",
+    traceContextHeaderAliases: "",
     tracesEnabled: true,
     metricsEnabled: false,
     logsEnabled: false,
@@ -99,6 +100,7 @@ Config fields (`settings.js` -> `opentelemetry`):
 -   **flowEventLogsEnabled**: Enable/disable flow hook event logs (`onSend`, `preDeliver`, etc.) while keeping runtime logger forwarding.
 -   **protocol**: `http` (json) or `proto` (protobuf).
 -   **serviceName**: Service name shown in your telemetry backend.
+-   **traceContextHeaderAliases**: Comma-separated alternate header names that should be treated as trace context aliases.
 -   **rootPrefix**: Optional prefix for root span names.
 -   **excludedNodeTypes**: Comma-separated Node-RED node types excluded from tracing.
 -   **includedNodeTypes**: Comma-separated Node-RED node types allowed for tracing. Empty means include all.
@@ -136,6 +138,7 @@ Supported environment variables:
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
 - `OTEL_EXPORTER_OTLP_PROTOCOL`
 - `OTEL_SERVICE_NAME`
+- `OTEL_TRACE_CONTEXT_HEADER_ALIASES`
 - `OTEL_LOG_LEVEL`
 - `OTEL_EXCLUDED_NODE_TYPES`
 - `OTEL_INCLUDED_NODE_TYPES`

@@ -48,6 +48,7 @@ const {
 	formatStartupConfigSummary,
 	pluginLog,
 	resolveExtractionCarrier,
+	setTraceContextHeaderAliases,
 	getSharedState,
 } = otelModule.__test__;
 
@@ -414,6 +415,31 @@ test("resolveOpenTelemetryConfig preserves explicit empty propagateHeaderNodeTyp
 	delete process.env.OTEL_PROPAGATE_HEADER_NODE_TYPES;
 	const config = resolveOpenTelemetryConfig({ propagateHeaderNodeTypes: "" });
 	assert.equal(config.propagateHeaderNodeTypes, "");
+});
+
+test("resolveOpenTelemetryConfig reads traceContextHeaderAliases from env variable", () => {
+	process.env.OTEL_TRACE_CONTEXT_HEADER_ALIASES = "x-traceparent,x-trace-id";
+	const config = resolveOpenTelemetryConfig({});
+	assert.equal(config.traceContextHeaderAliases, "x-traceparent,x-trace-id");
+});
+
+test("resolveOpenTelemetryConfig gives env traceContextHeaderAliases precedence over explicit", () => {
+	process.env.OTEL_TRACE_CONTEXT_HEADER_ALIASES = "x-traceparent,x-trace-id";
+	const config = resolveOpenTelemetryConfig({
+		traceContextHeaderAliases: "message-parent-id",
+	});
+	assert.equal(config.traceContextHeaderAliases, "x-traceparent,x-trace-id");
+
+	const explicit = resolveOpenTelemetryConfig({
+		traceContextHeaderAliases: "parent-trace",
+	});
+	assert.equal(explicit.traceContextHeaderAliases, "x-traceparent,x-trace-id");
+});
+
+test("resolveOpenTelemetryConfig preserves explicit empty traceContextHeaderAliases", () => {
+	delete process.env.OTEL_TRACE_CONTEXT_HEADER_ALIASES;
+	const config = resolveOpenTelemetryConfig({ traceContextHeaderAliases: "" });
+	assert.equal(config.traceContextHeaderAliases, "");
 });
 
 test("resolveOpenTelemetryConfig appends signal paths for specific endpoints without path", () => {
@@ -995,6 +1021,42 @@ test("carrier resolver covers amqp-in-manual-ack via same AMQP message shape", (
 		},
 	};
 	assert.equal(resolveExtractionCarrier(msg), msg.properties.headers);
+});
+
+test("createSpan extracts configured trace-context alias as trace context", () => {
+	const traceparent =
+		"00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01";
+	const calls = [];
+	const tracer = {
+		startSpan: (name, options, parentContext) => {
+			const span = createFakeSpan(name, options);
+			calls.push({ span, parentContext });
+			return span;
+		},
+	};
+	setTraceContextHeaderAliases(["x-traceparent"]);
+
+	createSpan(
+		mockRed,
+		tracer,
+		{
+			_msgid: "trace-alias-msg",
+			properties: {
+				headers: {
+					"x-traceparent": traceparent,
+				},
+			},
+		},
+		{ id: "node", type: "function", z: "flow" },
+		{},
+		false,
+	);
+
+	assert.ok(calls[0]?.parentContext);
+	assert.equal(
+		otelApi.trace.getSpanContext(calls[0].parentContext)?.traceId,
+		"25800e6074324d4bed01afc3eae6886f",
+	);
 });
 
 test("carrier resolver prefers explicit transport carriers over req.headers without HTTP request metadata", () => {
@@ -1663,6 +1725,7 @@ test("postDeliver.otel hook injects trace context into AMQP properties.headers",
 			rootPrefix: "",
 			excludedNodeTypes: "",
 			propagateHeaderNodeTypes: "amqp out",
+			traceContextHeaderAliases: "x-traceparent",
 			logLevel: "error",
 			timeout: 10,
 			attributeMappings: [],
@@ -1689,6 +1752,7 @@ test("postDeliver.otel hook injects trace context into AMQP properties.headers",
 	assert.ok(sendEvent.msg.properties?.headers);
 	assert.equal(sendEvent.msg.properties?.headers.existing, "keep");
 	assert.ok(sendEvent.msg.properties?.headers.traceparent);
+	assert.equal(sendEvent.msg.properties?.headers["x-traceparent"], sendEvent.msg.properties?.headers.traceparent);
 	assert.notEqual(
 		sendEvent.msg.properties?.headers.traceparent,
 		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
@@ -1960,6 +2024,7 @@ test("preDeliver.otel hook clears all propagated trace headers safely", async ()
 			rootPrefix: "",
 			excludedNodeTypes: "",
 			propagateHeaderNodeTypes: "function",
+			traceContextHeaderAliases: "x-traceparent",
 			logLevel: "error",
 			timeout: 10,
 			attributeMappings: [],
@@ -1976,6 +2041,7 @@ test("preDeliver.otel hook clears all propagated trace headers safely", async ()
 				traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
 				tracestate: "vendor=value",
 				baggage: "k=v",
+				"x-traceparent": "00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01",
 				"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
 				"x-b3-spanid": "e457b5a2e4d86bd1",
 				"x-b3-sampled": "1",
@@ -1986,6 +2052,7 @@ test("preDeliver.otel hook clears all propagated trace headers safely", async ()
 	assert.equal(sendEvent.msg.headers.traceparent, undefined);
 	assert.equal(sendEvent.msg.headers.tracestate, undefined);
 	assert.equal(sendEvent.msg.headers.baggage, undefined);
+	assert.equal(sendEvent.msg.headers["x-traceparent"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-traceid"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-spanid"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-sampled"], undefined);
@@ -2005,6 +2072,7 @@ test("preDeliver.otel hook clears propagated fields from AMQP properties.headers
 			rootPrefix: "",
 			excludedNodeTypes: "",
 			propagateHeaderNodeTypes: "function",
+			traceContextHeaderAliases: "x-traceparent",
 			logLevel: "error",
 			timeout: 10,
 			attributeMappings: [],
@@ -2022,6 +2090,7 @@ test("preDeliver.otel hook clears propagated fields from AMQP properties.headers
 					traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
 					tracestate: "vendor=value",
 					baggage: "k=v",
+					"x-traceparent": "00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01",
 					"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
 					"x-b3-spanid": "e457b5a2e4d86bd1",
 					"x-b3-sampled": "1",
@@ -2034,6 +2103,7 @@ test("preDeliver.otel hook clears propagated fields from AMQP properties.headers
 	assert.equal(sendEvent.msg.properties.headers.traceparent, undefined);
 	assert.equal(sendEvent.msg.properties.headers.tracestate, undefined);
 	assert.equal(sendEvent.msg.properties.headers.baggage, undefined);
+	assert.equal(sendEvent.msg.properties.headers["x-traceparent"], undefined);
 	assert.equal(sendEvent.msg.properties.headers["x-b3-traceid"], undefined);
 	assert.equal(sendEvent.msg.properties.headers["x-b3-spanid"], undefined);
 	assert.equal(sendEvent.msg.properties.headers["x-b3-sampled"], undefined);

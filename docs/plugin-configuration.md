@@ -14,6 +14,7 @@ module.exports = {
 		logsUrl: "http://localhost:4318/v1/logs",
 		protocol: "http",
 		serviceName: "Node-RED",
+		traceContextHeaderAliases: "",
 		tracesEnabled: true,
 		metricsEnabled: false,
 		logsEnabled: false,
@@ -46,6 +47,7 @@ Restart Node-RED after changing these settings.
 - `logsUrl`: OTLP logs endpoint.
 - `protocol`: `http` (json) or `proto` (protobuf).
 - `serviceName`: OpenTelemetry service name.
+- `traceContextHeaderAliases`: Comma-separated alternate header names treated as trace-context aliases.
 - `tracesEnabled`: Enable trace export.
 - `metricsEnabled`: Enable metric export.
 - `logsEnabled`: Enable log export (flow hook events and Node-RED runtime logger events).
@@ -68,6 +70,7 @@ Environment values are used when the matching plugin setting is missing or still
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
 - `OTEL_EXPORTER_OTLP_PROTOCOL`
 - `OTEL_SERVICE_NAME`
+- `OTEL_TRACE_CONTEXT_HEADER_ALIASES`
 - `OTEL_LOG_LEVEL`
 - `OTEL_EXCLUDED_NODE_TYPES`
 - `OTEL_INCLUDED_NODE_TYPES`
