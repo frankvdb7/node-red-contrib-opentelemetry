@@ -713,12 +713,179 @@ test("createSpan should handle various node types correctly", () => {
 	assert.ok(tcpSpans.parentSpan);
 });
 
+test("createSpan includes subflow name when subflow node type is used", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const redWithSubflow = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "flow") {
+					return { name: "Flow flow" };
+				}
+				if (id === "subflow-template-id") {
+					return { name: "My Subflow" };
+				}
+				return undefined;
+			},
+		},
+	};
+	const msg = { _msgid: "subflow-msg" };
+	const subflowNode = {
+		id: "subflow-instance-node",
+		type: "subflow:subflow-template-id",
+		z: "flow",
+	};
+
+	const span = createSpan(redWithSubflow, tracer, msg, subflowNode, {}, false);
+	assert.ok(span);
+	assert.equal(span.name, "subflow:subflow-template-id My Subflow");
+	assert.equal(span.attributes["node_red.node.name"], "My Subflow");
+});
+
+test("createSpan uses active subflow span as parent context for nested node spans", () => {
+	const calls = [];
+	const tracer = {
+		startSpan: (name, options, parentContext) => {
+			const span = createFakeSpan(name, options);
+			calls.push({ span, parentContext });
+			return span;
+		},
+	};
+	const redWithSubflow = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "flow") {
+					return { name: "Flow flow" };
+				}
+				if (id === "subflow-template-id") {
+					return { name: "My Subflow" };
+				}
+				return undefined;
+			},
+		},
+	};
+	const msg = { _msgid: "nested-subflow-msg" };
+	createSpan(
+		redWithSubflow,
+		tracer,
+		msg,
+		{
+			id: "subflow-instance-node",
+			type: "subflow:subflow-template-id",
+			z: "flow",
+		},
+		{},
+		false,
+	);
+	const subflowSpan = getMsgSpans()
+		.get("nested-subflow-msg")
+		?.spans.get("nested-subflow-msg#subflow-instance-node");
+	assert.ok(subflowSpan);
+
+	createSpan(
+		redWithSubflow,
+		tracer,
+		msg,
+		{
+			id: "inner-node",
+			type: "function",
+			name: "Inner Function",
+			z: "flow",
+		},
+		{},
+		false,
+	);
+	const innerSpanCall = calls[calls.length - 1];
+	assert.ok(innerSpanCall.parentContext);
+	assert.equal(otelApi.trace.getSpan(innerSpanCall.parentContext), subflowSpan);
+});
+
+test("nested subflow spans use LIFO parent context and unwind correctly", () => {
+	const calls = [];
+	const tracer = {
+		startSpan: (name, options, parentContext) => {
+			const span = createFakeSpan(name, options);
+			calls.push({ span, parentContext });
+			return span;
+		},
+	};
+	const redWithSubflow = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "flow") return { name: "Flow flow" };
+				if (id === "outer-subflow-id") return { name: "Outer Subflow" };
+				if (id === "inner-subflow-id") return { name: "Inner Subflow" };
+				return undefined;
+			},
+		},
+	};
+	const msg = { _msgid: "nested-stack-msg" };
+	const outerSubflowNode = {
+		id: "outer-subflow-instance",
+		type: "subflow:outer-subflow-id",
+		z: "flow",
+	};
+	const innerSubflowNode = {
+		id: "inner-subflow-instance",
+		type: "subflow:inner-subflow-id",
+		z: "flow",
+	};
+
+	createSpan(redWithSubflow, tracer, msg, outerSubflowNode, {}, false);
+	createSpan(redWithSubflow, tracer, msg, innerSubflowNode, {}, false);
+
+	const spansRecord = getMsgSpans().get("nested-stack-msg");
+	const outerSubflowSpan = spansRecord?.spans.get(
+		"nested-stack-msg#outer-subflow-instance",
+	);
+	const innerSubflowSpan = spansRecord?.spans.get(
+		"nested-stack-msg#inner-subflow-instance",
+	);
+	assert.ok(outerSubflowSpan);
+	assert.ok(innerSubflowSpan);
+
+	createSpan(
+		redWithSubflow,
+		tracer,
+		msg,
+		{
+			id: "inner-node",
+			type: "function",
+			name: "Inner Node",
+			z: "flow",
+		},
+		{},
+		false,
+	);
+	const innerNodeCall = calls[calls.length - 1];
+	assert.equal(otelApi.trace.getSpan(innerNodeCall.parentContext), innerSubflowSpan);
+
+	endSpan(redWithSubflow, msg, null, innerSubflowNode);
+
+	createSpan(
+		redWithSubflow,
+		tracer,
+		msg,
+		{
+			id: "outer-node",
+			type: "function",
+			name: "Outer Node",
+			z: "flow",
+		},
+		{},
+		false,
+	);
+	const outerNodeCall = calls[calls.length - 1];
+	assert.equal(otelApi.trace.getSpan(outerNodeCall.parentContext), outerSubflowSpan);
+});
+
 test("carrier resolver selects HTTP req.headers for extraction", () => {
 	const traceparent =
 		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 	const msg = {
 		_msgid: "http-in-msg",
-		req: { headers: { traceparent } },
+		req: { headers: { traceparent }, method: "GET" },
 	};
 	assert.equal(resolveExtractionCarrier(msg), msg.req.headers);
 });
@@ -753,6 +920,21 @@ test("carrier resolver covers amqp-in-manual-ack via same AMQP message shape", (
 		},
 	};
 	assert.equal(resolveExtractionCarrier(msg), msg.properties.headers);
+});
+
+test("carrier resolver prefers explicit transport carriers over req.headers without HTTP request metadata", () => {
+	const msg = {
+		_msgid: "stale-http-shape",
+		req: {
+			headers: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			},
+		},
+		userProperties: {
+			traceparent: "00-11111111111111111111111111111111-2222222222222222-01",
+		},
+	};
+	assert.equal(resolveExtractionCarrier(msg), msg.userProperties);
 });
 
 test("endSpan should handle http request and response correctly", () => {
@@ -1483,6 +1665,130 @@ test("postDeliver.otel hook falls back to msg.headers injection", async () => {
 	await runtimePlugin.onClose();
 });
 
+test("postDeliver.otel hook injects into all existing carriers on mixed-shape message", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "mixed-msg",
+			headers: { existingHttp: "keep" },
+			properties: { headers: { existingAmqp: "keep" } },
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+
+	assert.equal(sendEvent.msg.headers.existingHttp, "keep");
+	assert.equal(sendEvent.msg.properties.headers.existingAmqp, "keep");
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.ok(sendEvent.msg.properties.headers.traceparent);
+	assert.equal(
+		getTraceIdFromTraceparent(sendEvent.msg.headers.traceparent),
+		getTraceIdFromTraceparent(sendEvent.msg.properties.headers.traceparent),
+	);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook creates and injects msg.headers for http request when only AMQP carrier exists", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "http-from-amqp-shape",
+			properties: { headers: { existingAmqp: "keep" } },
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+
+	assert.equal(sendEvent.msg.properties.headers.existingAmqp, "keep");
+	assert.ok(sendEvent.msg.properties.headers.traceparent);
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.equal(
+		getTraceIdFromTraceparent(sendEvent.msg.properties.headers.traceparent),
+		getTraceIdFromTraceparent(sendEvent.msg.headers.traceparent),
+	);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook tolerates malformed primitive carriers", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "malformed-carriers-msg",
+			headers: "bad-headers-shape",
+			userProperties: "bad-user-props-shape",
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.equal(typeof sendEvent.msg.headers, "object");
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
 test("AMQP trace context survives publish/consume round trip via shared carrier resolver", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
@@ -1670,6 +1976,259 @@ test("preDeliver.otel hook clears propagated fields from MQTT userProperties", a
 	assert.equal(sendEvent.msg.userProperties["x-b3-spanid"], undefined);
 	assert.equal(sendEvent.msg.userProperties["x-b3-sampled"], undefined);
 	assert.equal(sendEvent.msg.userProperties.existing, "keep");
+
+	await runtimePlugin.onClose();
+});
+
+test("preDeliver.otel hook clears propagation fields case-insensitively", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "function",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: {
+			headers: {
+				Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+				Tracestate: "vendor=value",
+				Baggage: "k=v",
+				B3: "80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1",
+				"X-B3-TraceId": "80f198ee56343ba864fe8b2a57d3eff7",
+				existing: "keep",
+			},
+		},
+	};
+	preDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.headers.Traceparent, undefined);
+	assert.equal(sendEvent.msg.headers.Tracestate, undefined);
+	assert.equal(sendEvent.msg.headers.Baggage, undefined);
+	assert.equal(sendEvent.msg.headers.B3, undefined);
+	assert.equal(sendEvent.msg.headers["X-B3-TraceId"], undefined);
+	assert.equal(sendEvent.msg.headers.existing, "keep");
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel does not inject when destination node type is not allowed", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "mqtt out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const staleTraceparent =
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00";
+	const sendEvent = {
+		msg: {
+			_msgid: "not-allowed-destination",
+			headers: {
+				traceparent: staleTraceparent,
+				existing: "keep",
+			},
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.headers.traceparent, staleTraceparent);
+	assert.equal(sendEvent.msg.headers.existing, "keep");
+
+	await runtimePlugin.onClose();
+});
+
+test("preDeliver.otel hook removes duplicate propagation keys with mixed casing", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "function",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: {
+			headers: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				Traceparent: "00-11111111111111111111111111111111-2222222222222222-01",
+				b3: "80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1",
+				B3: "80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-0",
+				existing: "keep",
+			},
+		},
+	};
+	preDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.headers.traceparent, undefined);
+	assert.equal(sendEvent.msg.headers.Traceparent, undefined);
+	assert.equal(sendEvent.msg.headers.b3, undefined);
+	assert.equal(sendEvent.msg.headers.B3, undefined);
+	assert.equal(sendEvent.msg.headers.existing, "keep");
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook preserves non-string userProperties values while injecting trace context", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "mqtt out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "mqtt-preserve-types",
+			userProperties: {
+				counter: 42,
+				flag: true,
+				payloadSize: 1024,
+			},
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "mqtt out", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.userProperties.counter, 42);
+	assert.equal(sendEvent.msg.userProperties.flag, true);
+	assert.equal(sendEvent.msg.userProperties.payloadSize, 1024);
+	assert.ok(sendEvent.msg.userProperties.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook handles Object.create(null) headers carrier", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const headers = Object.create(null);
+	headers.existing = "keep";
+	const sendEvent = {
+		msg: {
+			_msgid: "null-proto-headers",
+			headers,
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.headers.existing, "keep");
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel allow-list is enforced per destination in fan-out", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const msg = { _msgid: "fanout-msg", headers: {} };
+	postDeliverListener({
+		msg,
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "http-node", type: "http request", z: "flow" } },
+	});
+	const httpTraceparent = msg.headers.traceparent;
+	assert.ok(httpTraceparent);
+
+	msg.headers.traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00";
+	postDeliverListener({
+		msg,
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "mqtt-node", type: "mqtt out", z: "flow" } },
+	});
+	assert.equal(
+		msg.headers.traceparent,
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+	);
 
 	await runtimePlugin.onClose();
 });

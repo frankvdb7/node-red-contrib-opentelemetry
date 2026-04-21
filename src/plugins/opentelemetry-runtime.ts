@@ -80,11 +80,18 @@ const fakeSpan = {
 	setStatus: () => {},
 	setAttribute: () => {},
 };
+type MessageSpanRecord = {
+	parentSpan: Span;
+	spans: Map<string, Span>;
+	updateTimestamp: number;
+	activeSubflowSpanIds: string[];
+};
+
 /**
  * The map of running parent spans, each message will be an entry, each span will be stored in its own spans map
- * @type {Map<string, {parentSpan: Span, spans: Map<string, Span>, updateTimestamp: number}>}
+ * @type {Map<string, MessageSpanRecord>}
  */
-const msgSpans = new Map();
+const msgSpans = new Map<string, MessageSpanRecord>();
 const completedHttpMetricsMsgIds = new Map<string, number>();
 const completedHttpResponseMsgIds = new Map<string, number>();
 const OTEL_HOOK_NAMES = [
@@ -1140,41 +1147,65 @@ type CarrierAdapter = {
 	ensureCarrier?: (msg: RuntimeMessage) => TextMapCarrier | undefined;
 };
 
+function isTextMapCarrier(value: unknown): value is TextMapCarrier {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const EXTRACT_CARRIER_ADAPTERS: CarrierAdapter[] = [
 	{
-		getCarrier: (msg) => msg.req?.headers as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.req?.headers) &&
+			(msg.req?.method || msg.req?.path)
+				? (msg.req.headers as TextMapCarrier)
+				: undefined,
 	},
 	{
-		getCarrier: (msg) => msg.userProperties as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.userProperties)
+				? (msg.userProperties as TextMapCarrier)
+				: undefined,
 	},
 	{
-		getCarrier: (msg) => msg.properties?.headers as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.properties?.headers)
+				? (msg.properties.headers as TextMapCarrier)
+				: undefined,
 	},
 	{
-		getCarrier: (msg) => msg.headers as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.headers) ? (msg.headers as TextMapCarrier) : undefined,
 	},
 ];
 
 const PROPAGATION_CARRIER_ADAPTERS: CarrierAdapter[] = [
 	{
-		getCarrier: (msg) => msg.properties?.headers as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.properties?.headers)
+				? (msg.properties.headers as TextMapCarrier)
+				: undefined,
 		ensureCarrier: (msg) => {
 			if (!msg.properties) {
 				return undefined;
 			}
-			if (!msg.properties.headers) {
+			if (!isTextMapCarrier(msg.properties.headers)) {
 				msg.properties.headers = {};
 			}
 			return msg.properties.headers as TextMapCarrier;
 		},
 	},
 	{
-		getCarrier: (msg) => msg.userProperties as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.userProperties)
+				? (msg.userProperties as TextMapCarrier)
+				: undefined,
 	},
 	{
-		getCarrier: (msg) => msg.headers as TextMapCarrier | undefined,
+		getCarrier: (msg) =>
+			isTextMapCarrier(msg.headers) ? (msg.headers as TextMapCarrier) : undefined,
 		ensureCarrier: (msg) => {
-			msg.headers ??= {};
+			if (!isTextMapCarrier(msg.headers)) {
+				msg.headers = {};
+			}
 			return msg.headers as TextMapCarrier;
 		},
 	},
@@ -1202,25 +1233,39 @@ function listPropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 }
 
 function resolvePropagationCarrier(msg: RuntimeMessage): TextMapCarrier {
-	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
-		const existingCarrier = adapter.getCarrier(msg);
-		if (existingCarrier) {
-			return existingCarrier;
+	const carriers = resolvePropagationCarriers(msg);
+	return carriers[0];
+}
+
+function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
+	const existingCarriers = listPropagationCarriers(msg);
+	if (existingCarriers.length > 0) {
+		const headersCarrier = PROPAGATION_CARRIER_ADAPTERS[
+			PROPAGATION_CARRIER_ADAPTERS.length - 1
+		].ensureCarrier?.(msg);
+		if (headersCarrier && !existingCarriers.includes(headersCarrier)) {
+			existingCarriers.push(headersCarrier);
 		}
+		return existingCarriers;
 	}
 	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
 		const createdCarrier = adapter.ensureCarrier?.(msg);
 		if (createdCarrier) {
-			return createdCarrier;
+			return [createdCarrier];
 		}
 	}
 	// Guaranteed by the headers adapter ensureCarrier fallback.
-	return msg.headers as TextMapCarrier;
+	return [msg.headers as TextMapCarrier];
 }
 
 function clearPropagationFields(carrier: TextMapCarrier): void {
-	propagator.fields().forEach((field: string) => {
-		delete carrier[field];
+	const lowerCaseFields = new Set(
+		propagator.fields().map((field: string) => field.toLowerCase()),
+	);
+	Object.keys(carrier).forEach((field) => {
+		if (lowerCaseFields.has(field.toLowerCase())) {
+			delete carrier[field];
+		}
 	});
 }
 
@@ -1260,6 +1305,39 @@ function getFlowName(RED: RuntimeApi, flowId: string): string | undefined {
 	if (!RED || !flowId) return undefined;
 	const flow = RED.nodes.getNode(flowId) as RuntimeRedNodeInstance | undefined;
 	return flow?.name;
+}
+
+function getSubflowNameFromType(
+	RED: RuntimeApi,
+	nodeType: string,
+): string | undefined {
+	if (!nodeType.startsWith("subflow:")) {
+		return undefined;
+	}
+	const subflowId = nodeType.slice("subflow:".length);
+	if (!subflowId) {
+		return undefined;
+	}
+	const subflowDefinition = RED.nodes.getNode(
+		subflowId,
+	) as RuntimeRedNodeInstance | undefined;
+	return subflowDefinition?.name;
+}
+
+function getResolvedNodeName(
+	RED: RuntimeApi,
+	nodeDefinition: RuntimeNodeDef,
+): string | undefined {
+	return (
+		nodeDefinition.name ||
+		getSubflowNameFromType(RED, nodeDefinition.type) ||
+		(RED.nodes.getNode(nodeDefinition.id) as RuntimeRedNodeInstance | undefined)
+			?.name
+	);
+}
+
+function isSubflowNodeType(nodeType: string): boolean {
+	return nodeType.startsWith("subflow:");
 }
 
 /**
@@ -1372,10 +1450,10 @@ function deleteOutdatedMsgSpans(): void {
 		for (const [msgId, msgSpan] of msgSpans) {
 			if (msgSpan.updateTimestamp < now - sharedState.timeout) {
 				// ending parent span and remove it
-				pluginLog(
-					"debug",
-					`Parent span "${msgSpan.parentSpan.name}" ${msgId} is outdated, ending`,
-				);
+					pluginLog(
+						"debug",
+						`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
+					);
 				msgSpan.parentSpan.end(msgSpan.updateTimestamp);
 				msgSpans.delete(msgId);
 				completedHttpMetricsMsgIds.delete(msgId);
@@ -1467,6 +1545,7 @@ function resolveSpanKind(nodeType: string): SpanKind {
 function buildCommonAttributes(
 	msgId: string,
 	nodeDefinition: RuntimeNodeDef,
+	nodeName: string | undefined,
 	flowName: string | undefined,
 ): Record<string, string | undefined> {
 	const commonAttributes: Record<string, string | undefined> = {
@@ -1474,7 +1553,7 @@ function buildCommonAttributes(
 		[ATTR_FLOW_ID]: nodeDefinition.z,
 		[ATTR_NODE_ID]: nodeDefinition.id,
 		[ATTR_NODE_TYPE]: nodeDefinition.type,
-		[ATTR_NODE_NAME]: nodeDefinition.name,
+		[ATTR_NODE_NAME]: nodeName,
 	};
 	if (flowName) {
 		commonAttributes[ATTR_FLOW_NAME] = flowName;
@@ -1519,8 +1598,41 @@ function createAndStoreParentSpan(
 		parentSpan,
 		spans: new Map(),
 		updateTimestamp: now,
+		activeSubflowSpanIds: [],
 	});
 	return { parentSpan, context: parentContext };
+}
+
+function activateSubflowSpan(msgId: string, spanId: string): void {
+	const record = msgSpans.get(msgId) as MessageSpanRecord | undefined;
+	if (!record || record.activeSubflowSpanIds.includes(spanId)) {
+		return;
+	}
+	record.activeSubflowSpanIds.push(spanId);
+}
+
+function deactivateSubflowSpan(msgId: string, spanId: string): void {
+	const record = msgSpans.get(msgId) as MessageSpanRecord | undefined;
+	if (!record) {
+		return;
+	}
+	record.activeSubflowSpanIds = record.activeSubflowSpanIds.filter(
+		(activeSpanId) => activeSpanId !== spanId,
+	);
+}
+
+function resolveParentContext(
+	msgId: string,
+	parent: MessageSpanRecord,
+): Context {
+	const activeSubflowSpanId = parent.activeSubflowSpanIds.at(-1);
+	if (activeSubflowSpanId) {
+		const subflowSpan = parent.spans.get(activeSubflowSpanId);
+		if (subflowSpan) {
+			return trace.setSpan(context.active(), subflowSpan);
+		}
+	}
+	return trace.setSpan(context.active(), parent.parentSpan);
 }
 
 function storeFakeChildSpan(
@@ -1564,17 +1676,26 @@ function createSpan(
 		if (msgId === undefined) {
 			return;
 		}
-		const spanId = getSpanId(msg, nodeDefinition);
+			const spanId = getSpanId(msg, nodeDefinition);
 		const existingParent = msgSpans.get(msgId);
 		if (msgSpans.has(msgId) && existingParent?.spans.has(spanId)) {
 			return;
 		}
 
-		const spanName = nodeDefinition.name || nodeDefinition.type;
-		const flowName = getFlowName(RED, nodeDefinition.z);
-		const now = Date.now();
-		const kind = resolveSpanKind(nodeDefinition.type);
-		const commonAttributes = buildCommonAttributes(msgId, nodeDefinition, flowName);
+			const nodeName = getResolvedNodeName(RED, nodeDefinition);
+			const spanName =
+				nodeDefinition.type.startsWith("subflow:") && nodeName
+					? `${nodeDefinition.type} ${nodeName}`
+					: (nodeName ?? nodeDefinition.type);
+			const flowName = getFlowName(RED, nodeDefinition.z);
+			const now = Date.now();
+			const kind = resolveSpanKind(nodeDefinition.type);
+			const commonAttributes = buildCommonAttributes(
+				msgId,
+				nodeDefinition,
+				nodeName,
+				flowName,
+			);
 		if (isNotTraced && !existingParent) {
 			pluginLog(
 				"debug",
@@ -1582,10 +1703,9 @@ function createSpan(
 			);
 			return;
 		}
-		let parentSpan: Span | undefined;
-		let ctx: Context | undefined =
-			existingParent &&
-			trace.setSpan(context.active(), existingParent.parentSpan);
+			let parentSpan: Span | undefined;
+			let ctx: Context | undefined =
+				existingParent && resolveParentContext(msgId, existingParent);
 		if (!existingParent) {
 			const createdParent = createAndStoreParentSpan(
 				tracer,
@@ -1648,12 +1768,15 @@ function createSpan(
 		pluginLog("debug", `=> Created span for ${nodeDefinition.type}`);
 
 		// store child span
-		const parent = msgSpans.get(msgId);
-		parent?.spans.set(spanId, span);
-		if (parent) {
-			parent.updateTimestamp = now;
-		}
-		return span;
+			const parent = msgSpans.get(msgId);
+			parent?.spans.set(spanId, span);
+			if (parent) {
+				parent.updateTimestamp = now;
+				if (isSubflowNodeType(nodeDefinition.type)) {
+					activateSubflowSpan(msgId, spanId);
+				}
+			}
+			return span;
 	} catch (error) {
 		pluginLog("error", "An error occurred during span creation", error);
 	}
@@ -1894,9 +2017,10 @@ function endSpan(
 			"debug",
 			`==> Ended span for ${nodeDefinition.id} ${nodeDefinition.type}`,
 		);
-		parent.spans.delete(msgSpanId);
-		parent.updateTimestamp = Date.now();
-		cleanupOrphanSpansIfNeeded(msgId, parent, currentSpanCreationTimestamp);
+			parent.spans.delete(msgSpanId);
+			deactivateSubflowSpan(msgId, msgSpanId);
+			parent.updateTimestamp = Date.now();
+			cleanupOrphanSpansIfNeeded(msgId, parent, currentSpanCreationTimestamp);
 	} catch (error) {
 		pluginLog("error", "An error occurred during span ending", error);
 	}
@@ -2167,25 +2291,29 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 				normalizeNodeType(sendEvent.destination.node.type),
 			)
 		) {
-			const carrier = resolvePropagationCarrier(sendEvent.msg);
-			clearPropagationFields(carrier);
 			const ctx = trace.setSpan(context.active(), span);
-			propagator.inject(ctx, carrier, defaultTextMapSetter);
+			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
+				clearPropagationFields(carrier);
+				propagator.inject(ctx, carrier, defaultTextMapSetter);
+			});
 		}
-		if (
-			sendEvent.source?.node &&
-			(sendEvent.source.node.type === "switch" ||
-				sendEvent.source.node.type.startsWith("subflow"))
-		) {
-			const msgId = getMsgId(sendEvent.msg);
-			const spanId = getSpanId(sendEvent.msg, sendEvent.source.node);
-			const parent = msgSpans.get(msgId);
-			if (parent?.spans.has(spanId)) {
-				pluginLog("debug", `Switch or subflow span ${spanId} will be ended`);
-				parent.spans.get(spanId)?.end();
-				parent.spans.delete(spanId);
+			if (
+				sendEvent.source?.node &&
+				(sendEvent.source.node.type === "switch" ||
+					sendEvent.source.node.type.startsWith("subflow"))
+			) {
+				const msgId = getMsgId(sendEvent.msg);
+				const spanId = getSpanId(sendEvent.msg, sendEvent.source.node);
+				const parent = msgSpans.get(msgId);
+				if (parent?.spans.has(spanId)) {
+					pluginLog("debug", `Switch or subflow span ${spanId} will be ended`);
+					parent.spans.get(spanId)?.end();
+					parent.spans.delete(spanId);
+					if (isSubflowNodeType(sendEvent.source.node.type)) {
+						deactivateSubflowSpan(msgId, spanId);
+					}
+				}
 			}
-		}
 	});
 
 	RED.hooks.add("postReceive.otel", (sendEvent: RuntimeHookEvent) => {
@@ -2423,6 +2551,7 @@ module.exports.__test__ = {
 	pluginLog,
 	resolveExtractionCarrier,
 	resolvePropagationCarrier,
+	resolvePropagationCarriers,
 	listPropagationCarriers,
 	getMsgSpans: () => msgSpans,
 	clearInterval: () => {
