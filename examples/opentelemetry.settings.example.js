@@ -8,6 +8,7 @@ module.exports = {
 		logsUrl: "http://localhost:4318/v1/logs",
 		protocol: "http", // "http" (json) or "proto" (protobuf)
 		serviceName: "Node-RED",
+		traceContextHeaderAliases: "",
 		tracesEnabled: true,
 		metricsEnabled: false,
 		logsEnabled: false,

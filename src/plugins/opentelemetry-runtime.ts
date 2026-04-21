@@ -73,6 +73,7 @@ const ATTR_NODE_ID = "node_red.node.id";
 const ATTR_NODE_TYPE = "node_red.node.type";
 const ATTR_NODE_NAME = "node_red.node.name";
 const ATTR_IS_MESSAGE_CREATION = "node_red.msg.new";
+const TRACE_CONTEXT_HEADER = "";
 const ORPHAN_NODE_TYPES = ["switch", "rbe"];
 const fakeSpan = {
 	end: () => {},
@@ -112,6 +113,7 @@ interface OTELConfig {
 	logsUrl?: string;
 	protocol?: string;
 	serviceName?: string;
+	traceContextHeaderAliases?: string;
 	tracesEnabled?: boolean;
 	metricsEnabled?: boolean;
 	logsEnabled?: boolean;
@@ -143,6 +145,7 @@ interface ResolvedOTELConfig {
 	metricsProtocol: "grpc" | "proto" | "http";
 	logsProtocol: "grpc" | "proto" | "http";
 	serviceName: string;
+	traceContextHeaderAliases: string;
 	tracesEnabled: boolean;
 	metricsEnabled: boolean;
 	logsEnabled: boolean;
@@ -269,6 +272,7 @@ interface SharedState {
 	rootPrefix: string;
 	timeout: number;
 	attributeMappings: AttributeMapping[];
+	traceContextHeaderAliasesList: string[];
 	excludedNodeTypesList: string[];
 	includedNodeTypesList: string[];
 	propagateHeaderNodeTypesList: string[];
@@ -293,6 +297,7 @@ const sharedState: SharedState = {
 	rootPrefix: "",
 	timeout: 10_000,
 	attributeMappings: [],
+	traceContextHeaderAliasesList: [],
 	excludedNodeTypesList: [],
 	includedNodeTypesList: [],
 	propagateHeaderNodeTypesList: [],
@@ -823,6 +828,7 @@ function formatStartupConfigSummary(config: ResolvedOTELConfig): string {
 		`logsProtocol=${String(config.logsProtocol)}`,
 		`logsUrl=${logsUrl}`,
 		`rootPrefix=${String(config.rootPrefix)}`,
+		`traceContextHeaderAliases=${String(config.traceContextHeaderAliases)}`,
 		`excludedNodeTypes=${String(config.excludedNodeTypes)}`,
 		`includedNodeTypes=${String(config.includedNodeTypes)}`,
 		`propagateHeaderNodeTypes=${String(config.propagateHeaderNodeTypes)}`,
@@ -849,6 +855,7 @@ function resolveOpenTelemetryConfig(
 	const excludedNodeTypesEnv = env.OTEL_EXCLUDED_NODE_TYPES;
 	const includedNodeTypesEnv = env.OTEL_INCLUDED_NODE_TYPES;
 	const propagateHeaderNodeTypesEnv = env.OTEL_PROPAGATE_HEADER_NODE_TYPES;
+	const traceContextHeaderAliasesEnv = env.OTEL_TRACE_CONTEXT_HEADER_ALIASES;
 	const tracesExporterEnv = env.OTEL_TRACES_EXPORTER;
 	const metricsExporterEnv = env.OTEL_METRICS_EXPORTER;
 	const logsExporterEnv = env.OTEL_LOGS_EXPORTER;
@@ -990,6 +997,10 @@ function resolveOpenTelemetryConfig(
 			propagateHeaderNodeTypesEnv ??
 			config.propagateHeaderNodeTypes ??
 			DEFAULT_PROPAGATE_HEADER_NODE_TYPES,
+		traceContextHeaderAliases:
+			traceContextHeaderAliasesEnv ??
+			config.traceContextHeaderAliases ??
+			"",
 		logLevel: configuredLogLevel,
 		timeout: config.timeout ?? DEFAULT_TIMEOUT_SECONDS,
 		attributeMappings: config.attributeMappings ?? [],
@@ -1017,6 +1028,24 @@ function sanitizeAttributeMappings(mappings: unknown): AttributeMapping[] {
 		const path = String(typedMapping.path ?? "").trim();
 		return key.length > 0 && path.length > 0;
 	}) as AttributeMapping[];
+}
+
+function sanitizeTraceContextHeaderAliases(aliases: unknown): string[] {
+	if (!Array.isArray(aliases)) {
+		return [];
+	}
+	const sanitizedAliases = new Set<string>();
+	for (const alias of aliases) {
+		if (typeof alias !== "string") {
+			continue;
+		}
+		const normalizedAlias = alias.trim();
+		if (normalizedAlias.length === 0) {
+			continue;
+		}
+		sanitizedAliases.add(normalizedAlias);
+	}
+	return [...sanitizedAliases];
 }
 
 function setAttributeIfPrimitive(
@@ -1231,6 +1260,56 @@ function resolveExtractionCarrier(msg: RuntimeMessage): TextMapCarrier | undefin
 	return undefined;
 }
 
+function getCarrierStringValue(
+	carrier: TextMapCarrier,
+	fieldName: string,
+): string | undefined {
+	const normalizedFieldName = fieldName.toLowerCase();
+	for (const [key, value] of Object.entries(carrier)) {
+		if (key.toLowerCase() !== normalizedFieldName) {
+			continue;
+		}
+		if (typeof value === "string" && value.length > 0) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function setCarrierFieldIgnoringCase(
+	carrier: TextMapCarrier,
+	fieldName: string,
+	value: string,
+): void {
+	const normalizedFieldName = fieldName.toLowerCase();
+	for (const key of Object.keys(carrier)) {
+		if (key.toLowerCase() !== normalizedFieldName) {
+			continue;
+		}
+		if (key !== fieldName) {
+			delete carrier[key];
+		}
+	}
+	carrier[fieldName] = value;
+}
+
+function normalizeTraceContextCarrier(carrier: TextMapCarrier): TextMapCarrier {
+	const traceparent = getCarrierStringValue(carrier, TRACE_CONTEXT_HEADER);
+	if (traceparent !== undefined) {
+		return carrier;
+	}
+	for (const alias of sharedState.traceContextHeaderAliasesList) {
+		const aliasValue = getCarrierStringValue(carrier, alias);
+		if (aliasValue !== undefined) {
+			return {
+				...carrier,
+				[TRACE_CONTEXT_HEADER]: aliasValue,
+			};
+		}
+	}
+	return carrier;
+}
+
 function listPropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	const carriers: TextMapCarrier[] = [];
 	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
@@ -1272,11 +1351,25 @@ function clearPropagationFields(carrier: TextMapCarrier): void {
 	const lowerCaseFields = new Set(
 		propagator.fields().map((field: string) => field.toLowerCase()),
 	);
+	lowerCaseFields.add(TRACE_CONTEXT_HEADER.toLowerCase());
+	for (const alias of sharedState.traceContextHeaderAliasesList) {
+		lowerCaseFields.add(alias.toLowerCase());
+	}
 	Object.keys(carrier).forEach((field) => {
 		if (lowerCaseFields.has(field.toLowerCase())) {
 			delete carrier[field];
 		}
 	});
+}
+
+function mirrorTraceContextAliases(carrier: TextMapCarrier): void {
+	const traceparent = getCarrierStringValue(carrier, TRACE_CONTEXT_HEADER);
+	if (traceparent === undefined) {
+		return;
+	}
+	for (const alias of sharedState.traceContextHeaderAliasesList) {
+		setCarrierFieldIgnoringCase(carrier, alias, traceparent);
+	}
 }
 
 /**
@@ -1616,7 +1709,11 @@ function extractIncomingContext(
 ): Context | undefined {
 	const carrier = resolveExtractionCarrier(msg);
 	return carrier
-		? propagator.extract(context.active(), carrier, defaultTextMapGetter)
+		? propagator.extract(
+				context.active(),
+				normalizeTraceContextCarrier(carrier),
+				defaultTextMapGetter,
+			)
 		: undefined;
 }
 
@@ -2092,6 +2189,9 @@ function applyResolvedRuntimeConfig(resolvedConfig: ResolvedOTELConfig): void {
 	sharedState.attributeMappings = sanitizeAttributeMappings(
 		resolvedConfig.attributeMappings,
 	);
+	sharedState.traceContextHeaderAliasesList = splitCsv(
+		resolvedConfig.traceContextHeaderAliases,
+	);
 	sharedState.excludedNodeTypesList = splitCsv(resolvedConfig.excludedNodeTypes).map(
 		normalizeNodeType,
 	);
@@ -2354,6 +2454,7 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
 				clearPropagationFields(carrier);
 				propagator.inject(ctx, carrier, defaultTextMapSetter);
+				mirrorTraceContextAliases(carrier);
 			});
 		}
 			if (
@@ -2597,6 +2698,11 @@ module.exports.__test__ = {
 	setAttributeMappings: (mappings: unknown) => {
 		sharedState.attributeMappings = sanitizeAttributeMappings(mappings);
 	},
+	setTraceContextHeaderAliases: (aliases: unknown) => {
+		sharedState.traceContextHeaderAliasesList = sanitizeTraceContextHeaderAliases(
+			aliases,
+		);
+	},
 	setTimeout: (timeoutMs: number) => {
 		sharedState.timeout = timeoutMs;
 	},
@@ -2630,6 +2736,7 @@ module.exports.__test__ = {
 		sharedState.rootPrefix = "";
 		sharedState.timeout = 10;
 		sharedState.attributeMappings = [];
+		sharedState.traceContextHeaderAliasesList = [];
 		sharedState.excludedNodeTypesList = [];
 		sharedState.includedNodeTypesList = [];
 		sharedState.propagateHeaderNodeTypesList = [];
