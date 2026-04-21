@@ -47,6 +47,7 @@ const {
 	maskUrlCredentials,
 	formatStartupConfigSummary,
 	pluginLog,
+	resolveExtractionCarrier,
 	getSharedState,
 } = otelModule.__test__;
 
@@ -96,6 +97,10 @@ function createFakeSpan(name, options = {}) {
 			this.updatedName = newName;
 		},
 	};
+}
+
+function getTraceIdFromTraceparent(traceparent) {
+	return String(traceparent || "").split("-")[1];
 }
 
 test("getMsgId prefers otelRootMsgId when present", () => {
@@ -708,29 +713,46 @@ test("createSpan should handle various node types correctly", () => {
 	assert.ok(tcpSpans.parentSpan);
 });
 
-test("createSpan should extract trace context from different sources", () => {
-	const tracer = {
-		startSpan: (name, options) => createFakeSpan(name, options),
+test("carrier resolver selects HTTP req.headers for extraction", () => {
+	const traceparent =
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+	const msg = {
+		_msgid: "http-in-msg",
+		req: { headers: { traceparent } },
 	};
-	const mqttMsg = { _msgid: "3", userProperties: {} };
-	const mqttNode = {
-		id: "mqtt-node",
-		type: "mqtt in",
-		name: "MQTT In",
-		z: "flow",
-	};
-	createSpan(mockRed, tracer, mqttMsg, mqttNode, {}, false);
-	assert.ok(getMsgSpans().has("3"));
+	assert.equal(resolveExtractionCarrier(msg), msg.req.headers);
+});
 
-	const amqpMsg = { _msgid: "4", properties: { headers: {} } };
-	const amqpNode = {
-		id: "amqp-node",
-		type: "amqp-in",
-		name: "AMQP In",
-		z: "flow",
+test("carrier resolver selects MQTT userProperties for extraction", () => {
+	const traceparent =
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+	const msg = {
+		_msgid: "mqtt-in-msg",
+		userProperties: { traceparent },
 	};
-	createSpan(mockRed, tracer, amqpMsg, amqpNode, {}, false);
-	assert.ok(getMsgSpans().has("4"));
+	assert.equal(resolveExtractionCarrier(msg), msg.userProperties);
+});
+
+test("carrier resolver selects AMQP properties.headers for extraction", () => {
+	const traceparent =
+		"00-11111111111111111111111111111111-2222222222222222-01";
+	const msg = {
+		_msgid: "amqp-in-msg",
+		properties: { headers: { traceparent } },
+	};
+	assert.equal(resolveExtractionCarrier(msg), msg.properties.headers);
+});
+
+test("carrier resolver covers amqp-in-manual-ack via same AMQP message shape", () => {
+	const msg = {
+		_msgid: "amqp-shape",
+		properties: {
+			headers: {
+				traceparent: "00-33333333333333333333333333333333-4444444444444444-01",
+			},
+		},
+	};
+	assert.equal(resolveExtractionCarrier(msg), msg.properties.headers);
 });
 
 test("endSpan should handle http request and response correctly", () => {
@@ -1338,7 +1360,7 @@ function createPluginHarness(withHookListeners: boolean = false) {
 	return { runtimePlugin, mockRed };
 }
 
-test("postDeliver.otel hook injects trace context for http and mqtt", async () => {
+test("postDeliver.otel hook injects trace context into AMQP properties.headers", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
 
@@ -1349,7 +1371,7 @@ test("postDeliver.otel hook injects trace context for http and mqtt", async () =
 			serviceName: "test-service",
 			rootPrefix: "",
 			excludedNodeTypes: "",
-			propagateHeaderNodeTypes: "http request,mqtt out",
+			propagateHeaderNodeTypes: "amqp out",
 			logLevel: "error",
 			timeout: 10,
 			attributeMappings: [],
@@ -1359,23 +1381,154 @@ test("postDeliver.otel hook injects trace context for http and mqtt", async () =
 	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
 	assert.ok(postDeliverListener);
 
-	const httpSendEvent = {
-		msg: { _msgid: "http-msg" },
+	const sendEvent = {
+		msg: {
+			_msgid: "amqp-msg",
+			properties: {
+				headers: {
+					existing: "keep",
+					traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+				},
+			},
+		},
 		source: { node: { id: "source-node", type: "function", z: "flow" } },
-		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "amqp out", z: "flow" } },
 	};
-	postDeliverListener(httpSendEvent);
-	assert.ok(httpSendEvent.msg.headers);
-	assert.ok(httpSendEvent.msg.headers.traceparent);
+	postDeliverListener(sendEvent);
+	assert.ok(sendEvent.msg.properties?.headers);
+	assert.equal(sendEvent.msg.properties?.headers.existing, "keep");
+	assert.ok(sendEvent.msg.properties?.headers.traceparent);
+	assert.notEqual(
+		sendEvent.msg.properties?.headers.traceparent,
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+	);
 
-	const mqttSendEvent = {
-		msg: { _msgid: "mqtt-msg" },
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook injects trace context into MQTT userProperties", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "mqtt out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "mqtt-msg",
+			userProperties: {
+				existing: "keep",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+			},
+		},
 		source: { node: { id: "source-node", type: "function", z: "flow" } },
 		destination: { node: { id: "dest-node", type: "mqtt out", z: "flow" } },
 	};
-	postDeliverListener(mqttSendEvent);
-	assert.ok(mqttSendEvent.msg.userProperties);
-	assert.ok(mqttSendEvent.msg.userProperties.traceparent);
+	postDeliverListener(sendEvent);
+	assert.ok(sendEvent.msg.userProperties);
+	assert.equal(sendEvent.msg.userProperties.existing, "keep");
+	assert.ok(sendEvent.msg.userProperties.traceparent);
+	assert.notEqual(
+		sendEvent.msg.userProperties.traceparent,
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+	);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook falls back to msg.headers injection", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: { _msgid: "http-msg", payload: "hello" },
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("AMQP trace context survives publish/consume round trip via shared carrier resolver", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "amqp out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const publishEvent = {
+		msg: {
+			_msgid: "amqp-publish-msg",
+			properties: {
+				headers: { existing: "keep" },
+			},
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "amqp out", z: "flow" } },
+	};
+	postDeliverListener(publishEvent);
+	const injectedTraceparent = publishEvent.msg.properties?.headers.traceparent;
+	assert.ok(injectedTraceparent);
+
+	const consumedMsg = {
+		_msgid: "amqp-consume-msg",
+		properties: {
+			headers: publishEvent.msg.properties?.headers,
+		},
+	};
+	const consumedCarrier = resolveExtractionCarrier(consumedMsg);
+	const consumedTraceId = getTraceIdFromTraceparent(
+		consumedCarrier?.traceparent,
+	);
+	assert.equal(consumedTraceId, getTraceIdFromTraceparent(injectedTraceparent));
 
 	await runtimePlugin.onClose();
 });
@@ -1421,6 +1574,102 @@ test("preDeliver.otel hook clears all propagated trace headers safely", async ()
 	assert.equal(sendEvent.msg.headers["x-b3-traceid"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-spanid"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-sampled"], undefined);
+
+	await runtimePlugin.onClose();
+});
+
+test("preDeliver.otel hook clears propagated fields from AMQP properties.headers", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "function",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: {
+			properties: {
+				headers: {
+					traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+					tracestate: "vendor=value",
+					baggage: "k=v",
+					"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
+					"x-b3-spanid": "e457b5a2e4d86bd1",
+					"x-b3-sampled": "1",
+					existing: "keep",
+				},
+			},
+		},
+	};
+	preDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.properties.headers.traceparent, undefined);
+	assert.equal(sendEvent.msg.properties.headers.tracestate, undefined);
+	assert.equal(sendEvent.msg.properties.headers.baggage, undefined);
+	assert.equal(sendEvent.msg.properties.headers["x-b3-traceid"], undefined);
+	assert.equal(sendEvent.msg.properties.headers["x-b3-spanid"], undefined);
+	assert.equal(sendEvent.msg.properties.headers["x-b3-sampled"], undefined);
+	assert.equal(sendEvent.msg.properties.headers.existing, "keep");
+
+	await runtimePlugin.onClose();
+});
+
+test("preDeliver.otel hook clears propagated fields from MQTT userProperties", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "function",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: {
+			userProperties: {
+				traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+				tracestate: "vendor=value",
+				baggage: "k=v",
+				"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
+				"x-b3-spanid": "e457b5a2e4d86bd1",
+				"x-b3-sampled": "1",
+				existing: "keep",
+			},
+		},
+	};
+	preDeliverListener(sendEvent);
+	assert.equal(sendEvent.msg.userProperties.traceparent, undefined);
+	assert.equal(sendEvent.msg.userProperties.tracestate, undefined);
+	assert.equal(sendEvent.msg.userProperties.baggage, undefined);
+	assert.equal(sendEvent.msg.userProperties["x-b3-traceid"], undefined);
+	assert.equal(sendEvent.msg.userProperties["x-b3-spanid"], undefined);
+	assert.equal(sendEvent.msg.userProperties["x-b3-sampled"], undefined);
+	assert.equal(sendEvent.msg.userProperties.existing, "keep");
 
 	await runtimePlugin.onClose();
 });
