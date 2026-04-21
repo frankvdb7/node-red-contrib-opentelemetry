@@ -196,6 +196,8 @@ type RuntimeMessage = NodeMessageInFlow & {
 	error?: unknown;
 	[key: string]: unknown;
 };
+
+type TextMapCarrier = Record<string, unknown>;
 type RuntimeHookEvent = {
 	msg: RuntimeMessage;
 	source?: { node: RuntimeNodeDef };
@@ -1133,6 +1135,95 @@ const propagator = new CompositePropagator({
 	],
 });
 
+type CarrierAdapter = {
+	getCarrier: (msg: RuntimeMessage) => TextMapCarrier | undefined;
+	ensureCarrier?: (msg: RuntimeMessage) => TextMapCarrier | undefined;
+};
+
+const EXTRACT_CARRIER_ADAPTERS: CarrierAdapter[] = [
+	{
+		getCarrier: (msg) => msg.req?.headers as TextMapCarrier | undefined,
+	},
+	{
+		getCarrier: (msg) => msg.userProperties as TextMapCarrier | undefined,
+	},
+	{
+		getCarrier: (msg) => msg.properties?.headers as TextMapCarrier | undefined,
+	},
+	{
+		getCarrier: (msg) => msg.headers as TextMapCarrier | undefined,
+	},
+];
+
+const PROPAGATION_CARRIER_ADAPTERS: CarrierAdapter[] = [
+	{
+		getCarrier: (msg) => msg.properties?.headers as TextMapCarrier | undefined,
+		ensureCarrier: (msg) => {
+			if (!msg.properties) {
+				return undefined;
+			}
+			if (!msg.properties.headers) {
+				msg.properties.headers = {};
+			}
+			return msg.properties.headers as TextMapCarrier;
+		},
+	},
+	{
+		getCarrier: (msg) => msg.userProperties as TextMapCarrier | undefined,
+	},
+	{
+		getCarrier: (msg) => msg.headers as TextMapCarrier | undefined,
+		ensureCarrier: (msg) => {
+			msg.headers ??= {};
+			return msg.headers as TextMapCarrier;
+		},
+	},
+];
+
+function resolveExtractionCarrier(msg: RuntimeMessage): TextMapCarrier | undefined {
+	for (const adapter of EXTRACT_CARRIER_ADAPTERS) {
+		const carrier = adapter.getCarrier(msg);
+		if (carrier) {
+			return carrier;
+		}
+	}
+	return undefined;
+}
+
+function listPropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
+	const carriers: TextMapCarrier[] = [];
+	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
+		const carrier = adapter.getCarrier(msg);
+		if (carrier) {
+			carriers.push(carrier);
+		}
+	}
+	return carriers;
+}
+
+function resolvePropagationCarrier(msg: RuntimeMessage): TextMapCarrier {
+	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
+		const existingCarrier = adapter.getCarrier(msg);
+		if (existingCarrier) {
+			return existingCarrier;
+		}
+	}
+	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
+		const createdCarrier = adapter.ensureCarrier?.(msg);
+		if (createdCarrier) {
+			return createdCarrier;
+		}
+	}
+	// Guaranteed by the headers adapter ensureCarrier fallback.
+	return msg.headers as TextMapCarrier;
+}
+
+function clearPropagationFields(carrier: TextMapCarrier): void {
+	propagator.fields().forEach((field: string) => {
+		delete carrier[field];
+	});
+}
+
 /**
  * Get parent span id or current message id if there is none
  * @param {{ otelRootMsgId?: string; _msgid: string }} msg Message data to be used to retrieve the parent span id `otelRootMsgId`
@@ -1393,30 +1484,11 @@ function buildCommonAttributes(
 
 function extractIncomingContext(
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
 ): Context | undefined {
-	if (hasHttpServerContext(msg, nodeDefinition)) {
-		return propagator.extract(
-			context.active(),
-			msg.req?.headers ?? {},
-			defaultTextMapGetter,
-		);
-	}
-	if (nodeDefinition.type === "mqtt in" && msg.userProperties) {
-		return propagator.extract(
-			context.active(),
-			msg.userProperties,
-			defaultTextMapGetter,
-		);
-	}
-	if (nodeDefinition.type === "amqp-in" || nodeDefinition.type === "amqp-in-manual-ack") {
-		return propagator.extract(
-			context.active(),
-			msg.properties?.headers ?? {},
-			defaultTextMapGetter,
-		);
-	}
-	return undefined;
+	const carrier = resolveExtractionCarrier(msg);
+	return carrier
+		? propagator.extract(context.active(), carrier, defaultTextMapGetter)
+		: undefined;
 }
 
 function createAndStoreParentSpan(
@@ -1429,7 +1501,7 @@ function createAndStoreParentSpan(
 	commonAttributes: Record<string, string | undefined>,
 	now: number,
 ): { parentSpan: Span; context: Context } {
-	const extractedContext = extractIncomingContext(msg, nodeDefinition);
+	const extractedContext = extractIncomingContext(msg);
 	const parentSpan = tracer.startSpan(
 		sharedState.rootPrefix + spanName,
 		{
@@ -2069,12 +2141,8 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 				normalizeNodeType(sendEvent.source.node.type),
 			)
 		) {
-			if (!sendEvent.msg.headers) {
-				sendEvent.msg.headers = {};
-			}
-			const headers = sendEvent.msg.headers;
-			propagator.fields().forEach((field: string) => {
-				delete headers[field];
+			listPropagationCarriers(sendEvent.msg).forEach((carrier) => {
+				clearPropagationFields(carrier);
 			});
 		}
 		logEvent(RED, null, "3.preDeliver", sendEvent);
@@ -2099,23 +2167,10 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 				normalizeNodeType(sendEvent.destination.node.type),
 			)
 		) {
-			const output: Record<string, string> = {};
-			const ctx = trace.setSpan(context.active(), span as Span);
-			propagator.inject(ctx, output, defaultTextMapSetter);
-			switch (sendEvent.destination.node.type) {
-				case "mqtt out":
-					if (!sendEvent.msg.userProperties) {
-						sendEvent.msg.userProperties = {};
-					}
-					Object.assign(sendEvent.msg.userProperties, output);
-					break;
-				default:
-					if (!sendEvent.msg.headers) {
-						sendEvent.msg.headers = {};
-					}
-					Object.assign(sendEvent.msg.headers, output);
-					break;
-			}
+			const carrier = resolvePropagationCarrier(sendEvent.msg);
+			clearPropagationFields(carrier);
+			const ctx = trace.setSpan(context.active(), span);
+			propagator.inject(ctx, carrier, defaultTextMapSetter);
 		}
 		if (
 			sendEvent.source?.node &&
@@ -2366,6 +2421,9 @@ module.exports.__test__ = {
 	formatStartupConfigSummary,
 	logEvent,
 	pluginLog,
+	resolveExtractionCarrier,
+	resolvePropagationCarrier,
+	listPropagationCarriers,
 	getMsgSpans: () => msgSpans,
 	clearInterval: () => {
 		if (sharedState.intervalId) {
