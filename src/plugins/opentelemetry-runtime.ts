@@ -215,6 +215,11 @@ type RuntimeHookEvent = {
 type RuntimeRedNodeInstance = {
 	id?: string;
 	name?: string;
+	type?: string;
+	_flow?: { id?: string; label?: string; name?: string; subflow?: { name?: string } };
+	subflow?: { name?: string };
+	_def?: { label?: string; name?: string };
+	label?: string;
 };
 type RuntimePluginRegistration = {
 	type?: string;
@@ -1317,6 +1322,23 @@ function getFlowName(RED: RuntimeApi, flowId: string): string | undefined {
 	return flow?.name;
 }
 
+function getFlowNameFromRuntimeNode(
+	runtimeNode: RuntimeRedNodeInstance | undefined,
+): string | undefined {
+	return runtimeNode?._flow?.label ?? runtimeNode?._flow?.name;
+}
+
+function getSubflowNameFromRuntimeNode(
+	runtimeNode: RuntimeRedNodeInstance | undefined,
+): string | undefined {
+	return (
+		runtimeNode?._flow?.subflow?.name ||
+		runtimeNode?.subflow?.name ||
+		runtimeNode?._def?.label ||
+		runtimeNode?._def?.name
+	);
+}
+
 function getSubflowNameFromType(
 	RED: RuntimeApi,
 	nodeType: string,
@@ -1346,11 +1368,21 @@ function getResolvedNodeName(
 	RED: RuntimeApi,
 	nodeDefinition: RuntimeNodeDef,
 ): string | undefined {
+	const runtimeNode = RED.nodes.getNode(
+		nodeDefinition.id,
+	) as RuntimeRedNodeInstance | undefined;
+	if (isSubflowNodeType(nodeDefinition.type)) {
+		return (
+			nodeDefinition.name ||
+			getSubflowNameFromType(RED, nodeDefinition.type) ||
+			getSubflowNameFromRuntimeNode(runtimeNode) ||
+			runtimeNode?.name
+		);
+	}
 	return (
 		nodeDefinition.name ||
 		getSubflowNameFromType(RED, nodeDefinition.type) ||
-		(RED.nodes.getNode(nodeDefinition.id) as RuntimeRedNodeInstance | undefined)
-			?.name
+		runtimeNode?.name
 	);
 }
 
@@ -1700,12 +1732,17 @@ function createSpan(
 			return;
 		}
 
-			const nodeName = getResolvedNodeName(RED, nodeDefinition);
-			const spanName =
-				nodeDefinition.type.startsWith("subflow:") && nodeName
-					? `${nodeDefinition.type} ${nodeName}`
-					: (nodeName ?? nodeDefinition.type);
-			const flowName = getFlowName(RED, nodeDefinition.z);
+				const nodeName = getResolvedNodeName(RED, nodeDefinition);
+				const runtimeNode = RED.nodes.getNode(
+					nodeDefinition.id,
+				) as RuntimeRedNodeInstance | undefined;
+				const spanName =
+					nodeDefinition.type.startsWith("subflow:") && nodeName
+						? `${nodeDefinition.type} ${nodeName}`
+						: (nodeName ?? nodeDefinition.type);
+				const flowName =
+					getFlowName(RED, nodeDefinition.z) ||
+					getFlowNameFromRuntimeNode(runtimeNode);
 			const now = Date.now();
 			const kind = resolveSpanKind(nodeDefinition.type);
 			const commonAttributes = buildCommonAttributes(
@@ -2012,8 +2049,12 @@ function endSpan(
 			if (!spanContext) {
 			return;
 		}
-		const { parent, span } = spanContext;
-		const flowName = getFlowName(RED, nodeDefinition.z);
+			const { parent, span } = spanContext;
+			const runtimeNode = RED.nodes.getNode(
+				nodeDefinition.id,
+			) as RuntimeRedNodeInstance | undefined;
+			const flowName =
+				getFlowName(RED, nodeDefinition.z) || getFlowNameFromRuntimeNode(runtimeNode);
 		if (flowName) {
 			span?.setAttribute(ATTR_FLOW_NAME, flowName);
 			}
