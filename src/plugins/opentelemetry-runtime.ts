@@ -246,6 +246,11 @@ type NodeRedLogEntry = {
 	[key: string]: unknown;
 };
 type RuntimeApi = NodeAPI & {
+	nodes: NodeAPI["nodes"] & {
+		getFlows?: () =>
+			| { flows?: Array<{ id?: string; type?: string; name?: string; label?: string }> }
+			| undefined;
+	};
 	plugins: NodeAPI["plugins"] & {
 		registerPlugin?: (id: string, plugin: RuntimePluginRegistration) => void;
 	};
@@ -1303,6 +1308,11 @@ function getSpanId(
  */
 function getFlowName(RED: RuntimeApi, flowId: string): string | undefined {
 	if (!RED || !flowId) return undefined;
+	const flowConfig = RED.nodes.getFlows?.();
+	const flowEntry = flowConfig?.flows?.find((entry) => entry.id === flowId);
+	if (flowEntry) {
+		return flowEntry.label ?? flowEntry.name;
+	}
 	const flow = RED.nodes.getNode(flowId) as RuntimeRedNodeInstance | undefined;
 	return flow?.name;
 }
@@ -1321,7 +1331,15 @@ function getSubflowNameFromType(
 	const subflowDefinition = RED.nodes.getNode(
 		subflowId,
 	) as RuntimeRedNodeInstance | undefined;
-	return subflowDefinition?.name;
+	const subflowNameFromNode = subflowDefinition?.name;
+	if (subflowNameFromNode) {
+		return subflowNameFromNode;
+	}
+	const flowConfig = RED.nodes.getFlows?.();
+	const subflowEntry = flowConfig?.flows?.find(
+		(entry) => entry.type === "subflow" && entry.id === subflowId,
+	);
+	return subflowEntry?.name;
 }
 
 function getResolvedNodeName(
