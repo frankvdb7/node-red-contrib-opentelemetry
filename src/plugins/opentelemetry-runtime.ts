@@ -61,6 +61,8 @@ import {
 import jmespath from "jmespath";
 import { name, version } from "../../package.json";
 
+const hashSum = require("hash-sum") as (value: unknown) => string;
+
 /**
  * @typedef {import('@opentelemetry/api').Tracer} Tracer
  * @typedef {import('@opentelemetry/api').Span} Span
@@ -74,6 +76,7 @@ const ATTR_NODE_TYPE = "node_red.node.type";
 const ATTR_NODE_NAME = "node_red.node.name";
 const ATTR_IS_MESSAGE_CREATION = "node_red.msg.new";
 const TRACE_CONTEXT_HEADER = "traceparent";
+const NODE_RED_HTTP_REQUEST_NODE_HEADER = "x-node-red-request-node";
 const ORPHAN_NODE_TYPES = ["switch", "rbe"];
 const fakeSpan = {
 	end: () => {},
@@ -1276,6 +1279,67 @@ function getCarrierStringValue(
 	return undefined;
 }
 
+function getCarrierFieldNameIgnoringCase(
+	carrier: TextMapCarrier,
+	fieldName: string,
+): string | undefined {
+	const normalizedFieldName = fieldName.toLowerCase();
+	return Object.keys(carrier).find(
+		(key) => key.toLowerCase() === normalizedFieldName,
+	);
+}
+
+function removeCarrierFieldIgnoringCase(
+	carrier: TextMapCarrier,
+	fieldName: string,
+): void {
+	const key = getCarrierFieldNameIgnoringCase(carrier, fieldName);
+	if (key !== undefined) {
+		delete carrier[key];
+	}
+}
+
+function calculateNodeRedHttpRequestHeaderHash(
+	carrier: TextMapCarrier,
+): string {
+	const headers = { ...carrier };
+	removeCarrierFieldIgnoringCase(headers, NODE_RED_HTTP_REQUEST_NODE_HEADER);
+	return hashSum(headers);
+}
+
+function isUnchangedNodeRedHttpResponseHeaders(
+	carrier: TextMapCarrier,
+): boolean {
+	const headerHash = getCarrierStringValue(
+		carrier,
+		NODE_RED_HTTP_REQUEST_NODE_HEADER,
+	);
+	if (headerHash === undefined) {
+		return false;
+	}
+	return calculateNodeRedHttpRequestHeaderHash(carrier) === headerHash;
+}
+
+function refreshNodeRedHttpResponseHeaderHash(carrier: TextMapCarrier): void {
+	const hashHeaderName = getCarrierFieldNameIgnoringCase(
+		carrier,
+		NODE_RED_HTTP_REQUEST_NODE_HEADER,
+	);
+	if (hashHeaderName === undefined) {
+		return;
+	}
+	carrier[hashHeaderName] = calculateNodeRedHttpRequestHeaderHash(carrier);
+}
+
+function discardUnchangedNodeRedHttpResponseHeaders(msg: RuntimeMessage): void {
+	if (
+		isTextMapCarrier(msg.headers) &&
+		isUnchangedNodeRedHttpResponseHeaders(msg.headers)
+	) {
+		delete msg.headers;
+	}
+}
+
 function setCarrierFieldIgnoringCase(
 	carrier: TextMapCarrier,
 	fieldName: string,
@@ -2427,6 +2491,12 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 			listPropagationCarriers(sendEvent.msg).forEach((carrier) => {
 				clearPropagationFields(carrier);
 			});
+			if (
+				normalizeNodeType(sendEvent.source.node.type) === "http request" &&
+				isTextMapCarrier(sendEvent.msg.headers)
+			) {
+				refreshNodeRedHttpResponseHeaderHash(sendEvent.msg.headers);
+			}
 		}
 		logEvent(RED, null, "3.preDeliver", sendEvent);
 	});
@@ -2451,29 +2521,32 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 			)
 		) {
 			const ctx = trace.setSpan(context.active(), span);
+			if (normalizeNodeType(sendEvent.destination.node.type) === "http request") {
+				discardUnchangedNodeRedHttpResponseHeaders(sendEvent.msg);
+			}
 			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
 				clearPropagationFields(carrier);
 				propagator.inject(ctx, carrier, defaultTextMapSetter);
 				mirrorTraceContextAliases(carrier);
 			});
 		}
-			if (
-				sendEvent.source?.node &&
-				(sendEvent.source.node.type === "switch" ||
-					sendEvent.source.node.type.startsWith("subflow"))
-			) {
-				const msgId = getMsgId(sendEvent.msg);
-				const spanId = getSpanId(sendEvent.msg, sendEvent.source.node);
-				const parent = msgSpans.get(msgId);
-				if (parent?.spans.has(spanId)) {
-					pluginLog("debug", `Switch or subflow span ${spanId} will be ended`);
-					parent.spans.get(spanId)?.end();
-					parent.spans.delete(spanId);
-					if (isSubflowNodeType(sendEvent.source.node.type)) {
-						deactivateSubflowSpan(msgId, spanId);
-					}
+		if (
+			sendEvent.source?.node &&
+			(sendEvent.source.node.type === "switch" ||
+				sendEvent.source.node.type.startsWith("subflow"))
+		) {
+			const msgId = getMsgId(sendEvent.msg);
+			const spanId = getSpanId(sendEvent.msg, sendEvent.source.node);
+			const parent = msgSpans.get(msgId);
+			if (parent?.spans.has(spanId)) {
+				pluginLog("debug", `Switch or subflow span ${spanId} will be ended`);
+				parent.spans.get(spanId)?.end();
+				parent.spans.delete(spanId);
+				if (isSubflowNodeType(sendEvent.source.node.type)) {
+					deactivateSubflowSpan(msgId, spanId);
 				}
 			}
+		}
 	});
 
 	RED.hooks.add("postReceive.otel", (sendEvent: RuntimeHookEvent) => {

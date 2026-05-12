@@ -84,6 +84,7 @@
 		"@opentelemetry/sdk-metrics": "^2.6.1",
 		"@opentelemetry/sdk-trace-base": "^2.6.1",
 		"@opentelemetry/semantic-conventions": "^1.40.0",
+		"hash-sum": "2.0.0",
 		"jmespath": "^0.16.0",
 		"on-finished": "^2.4.1"
 	}

@@ -18,6 +18,7 @@ Module._resolveFilename = function (request, parent, isMain, options) {
 };
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const hashSum = require("hash-sum");
 const otelApi = require("@opentelemetry/api");
 const otelLogsApi = require("@opentelemetry/api-logs");
 const otelModule = require("../src/plugins/opentelemetry-runtime");
@@ -102,6 +103,11 @@ function createFakeSpan(name, options = {}) {
 
 function getTraceIdFromTraceparent(traceparent) {
 	return String(traceparent || "").split("-")[1];
+}
+
+function addNodeRedHttpRequestHeaderHash(headers) {
+	headers["x-node-red-request-node"] = hashSum(headers);
+	return headers;
 }
 
 test("getMsgId prefers otelRootMsgId when present", () => {
@@ -1838,6 +1844,52 @@ test("postDeliver.otel hook falls back to msg.headers injection", async () => {
 	await runtimePlugin.onClose();
 });
 
+test("postDeliver.otel hook does not turn unchanged Node-RED response headers into http request headers", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "http-msg-with-response-headers",
+			payload: { hello: "world" },
+			headers: addNodeRedHttpRequestHeaderHash({
+				"content-length": "0",
+				date: "Tue, 12 May 2026 08:44:01 GMT",
+				server: "Kestrel",
+			}),
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	postDeliverListener(sendEvent);
+
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.equal(sendEvent.msg.headers["content-length"], undefined);
+	assert.equal(sendEvent.msg.headers.date, undefined);
+	assert.equal(sendEvent.msg.headers.server, undefined);
+	assert.equal(sendEvent.msg.headers["x-node-red-request-node"], undefined);
+
+	await runtimePlugin.onClose();
+});
+
 test("postDeliver.otel hook injects into all existing carriers on mixed-shape message", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
@@ -2056,6 +2108,50 @@ test("preDeliver.otel hook clears all propagated trace headers safely", async ()
 	assert.equal(sendEvent.msg.headers["x-b3-traceid"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-spanid"], undefined);
 	assert.equal(sendEvent.msg.headers["x-b3-sampled"], undefined);
+
+	await runtimePlugin.onClose();
+});
+
+test("preDeliver.otel hook preserves Node-RED response header ignore marker after cleaning http request headers", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const sendEvent = {
+		source: { node: { type: "http request" } },
+		msg: {
+			headers: addNodeRedHttpRequestHeaderHash({
+				"content-length": "0",
+				traceparent:
+					"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+			}),
+		},
+	};
+	preDeliverListener(sendEvent);
+
+	assert.equal(sendEvent.msg.headers.traceparent, undefined);
+	const expectedHashInput = { ...sendEvent.msg.headers };
+	delete expectedHashInput["x-node-red-request-node"];
+	assert.equal(
+		sendEvent.msg.headers["x-node-red-request-node"],
+		hashSum(expectedHashInput),
+	);
 
 	await runtimePlugin.onClose();
 });
