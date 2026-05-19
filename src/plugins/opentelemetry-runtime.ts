@@ -1602,6 +1602,16 @@ function logEvent(
 	}
 
 	try {
+		const parent = msgSpans.get(msgId);
+		const spanNode =
+			event.node?.node || event.destination?.node || event.source?.node;
+		const spanForLog =
+			spanNode && parent
+				? parent.spans.get(getSpanId(event.msg, spanNode)) || parent.parentSpan
+				: parent?.parentSpan;
+		const emitContext = spanForLog
+			? trace.setSpan(context.active(), spanForLog)
+			: context.active();
 		const attributes: Record<string, string> = {
 			[ATTR_MSG_ID]: msgId,
 			"node_red.msg._msgid": _msgId,
@@ -1630,7 +1640,7 @@ function logEvent(
 				severityText: "INFO",
 				body: `${eventType}: ${logMsg}`,
 				attributes,
-				context: context.active(),
+				context: emitContext,
 			});
 		}
 	} catch (error) {
@@ -2002,6 +2012,7 @@ function recordHttpResponseMetricsIfNeeded(
 	msgId: string,
 	msg: RuntimeMessage,
 	nodeDefinition: RuntimeNodeDef,
+	parentSpan?: Span,
 ): void {
 	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) {
 		return;
@@ -2016,11 +2027,14 @@ function recordHttpResponseMetricsIfNeeded(
 		return;
 	}
 	const duration = Date.now() - msg.otelStartTime;
+	const metricContext = parentSpan
+		? trace.setSpan(context.active(), parentSpan)
+		: context.active();
 	sharedState.metrics.requestDuration.record(duration, {
 		[ATTR_HTTP_RESPONSE_STATUS_CODE]: msg.res?._res?.statusCode ?? 0,
 		[ATTR_HTTP_REQUEST_METHOD]: msg.req?.method ?? "",
 		[ATTR_URL_PATH]: msg.req?.path ?? "",
-	});
+	}, metricContext);
 	completedHttpMetricsMsgIds.set(msgId, Date.now());
 	msg.otelHttpMetricsRecorded = true;
 }
@@ -2204,9 +2218,15 @@ function endSpan(
 			if (!msgId) {
 				return;
 			}
-			recordHttpResponseMetricsIfNeeded(msgId, msg, nodeDefinition);
+			const parentSpan = msgSpans.get(msgId)?.parentSpan;
 			const msgSpanId = getSpanId(msg, nodeDefinition);
 			const spanContext = resolveSpanContextForEnd(msgId, msgSpanId);
+			recordHttpResponseMetricsIfNeeded(
+				msgId,
+				msg,
+				nodeDefinition,
+				parentSpan,
+			);
 			if (!spanContext) {
 			return;
 		}
@@ -2783,6 +2803,24 @@ module.exports.__test__ = {
 		sharedState.logLevel = resolveLogLevel(value) || DEFAULT_LOG_LEVEL;
 	},
 	resolveOpenTelemetryConfig,
+	ensureSignalPath,
+	ensureSignalPathFromGenericEndpoint,
+	normalizeGrpcEndpoint,
+	normalizeNodeType,
+	shouldSkipNodeType,
+	parseNodeUrl,
+	resolveProtocol,
+	resolveLogLevel,
+	resolveNodeRedLogLevel,
+	parseExporterEnv,
+	resolveSignalEnabledFromEnv,
+	resolveNodeRedSeverity,
+	resolveSpanKind,
+	buildAutoSpanAttributes,
+	hasHttpServerContext,
+	hasHttpResponseContext,
+	shouldHandleTerminalHttpResponse,
+	isSubflowNodeType,
 	maskUrlCredentials,
 	formatStartupConfigSummary,
 	logEvent,

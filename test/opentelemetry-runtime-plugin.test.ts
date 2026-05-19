@@ -45,6 +45,24 @@ const {
 	logEvent,
 	setLogLevel,
 	resolveOpenTelemetryConfig,
+	ensureSignalPath,
+	ensureSignalPathFromGenericEndpoint,
+	normalizeGrpcEndpoint,
+	normalizeNodeType,
+	shouldSkipNodeType,
+	parseNodeUrl,
+	resolveProtocol,
+	resolveLogLevel,
+	resolveNodeRedLogLevel,
+	parseExporterEnv,
+	resolveSignalEnabledFromEnv,
+	resolveNodeRedSeverity,
+	resolveSpanKind,
+	buildAutoSpanAttributes,
+	hasHttpServerContext,
+	hasHttpResponseContext,
+	shouldHandleTerminalHttpResponse,
+	isSubflowNodeType,
 	maskUrlCredentials,
 	formatStartupConfigSummary,
 	pluginLog,
@@ -721,6 +739,41 @@ test("logEvent can disable flow event logs independently from runtime logs", () 
 	sharedState.flowEventLogsEnabled = false;
 	logEvent(mockRed, {}, "test", { msg: { _msgid: "1" } });
 	assert.equal(emitSpy.mock.calls.length, 0);
+});
+
+test("logEvent emits with explicit span context when message span exists", () => {
+	setLogLevel("info");
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const logger = { emit: () => {} };
+	const emitSpy = test.mock.method(logger, "emit");
+	const sharedState = getSharedState();
+	sharedState.logger = logger;
+	const msg = { _msgid: "log-context-msg", z: "flow" };
+	const node = { id: "function-node", type: "function", z: "flow" };
+	const eventSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(eventSpan);
+	const parent = getMsgSpans().get("log-context-msg");
+	assert.ok(parent);
+
+	logEvent(mockRed, {}, "test", { msg, node: { node } });
+
+	assert.equal(emitSpy.mock.calls.length, 1);
+	const emitArg = emitSpy.mock.calls[0].arguments[0];
+	assert.equal(otelApi.trace.getSpan(emitArg.context), eventSpan);
+});
+
+test("logEvent falls back to active context when no message span exists", () => {
+	setLogLevel("info");
+	const logger = { emit: () => {} };
+	const emitSpy = test.mock.method(logger, "emit");
+	const sharedState = getSharedState();
+	sharedState.logger = logger;
+	logEvent(mockRed, {}, "test", { msg: { _msgid: "no-span-msg" } });
+	assert.equal(emitSpy.mock.calls.length, 1);
+	const emitArg = emitSpy.mock.calls[0].arguments[0];
+	assert.equal(otelApi.trace.getSpan(emitArg.context), undefined);
 });
 
 test("createSpan should handle various node types correctly", () => {
@@ -1407,6 +1460,35 @@ test("endSpan records http metrics even when there is no active span", () => {
 		"http.request.method": "GET",
 		"url.path": "/health",
 	});
+	assert.equal(call.arguments.length, 3);
+	assert.equal(otelApi.trace.getSpan(call.arguments[2]), undefined);
+});
+
+test("endSpan records http metrics with parent span context when span exists", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const sharedState = getSharedState();
+	const recordSpy = test.mock.fn();
+	sharedState.metrics.requestDuration = { record: recordSpy };
+	const msg = {
+		_msgid: "metrics-trace-linked-msg",
+		otelStartTime: Date.now() - 50,
+		req: { method: "GET", path: "/health" },
+		res: { _res: { statusCode: 204 } },
+	};
+	const node = { id: "http-response", type: "http response", z: "flow" };
+	const span = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(span);
+	const parentSpan = getMsgSpans().get(msg._msgid)?.parentSpan;
+	assert.ok(parentSpan);
+
+	endSpan(mockRed, msg, null, node);
+
+	assert.equal(recordSpy.mock.calls.length, 1);
+	const call = recordSpy.mock.calls[0];
+	assert.equal(call.arguments.length, 3);
+	assert.equal(otelApi.trace.getSpan(call.arguments[2]), parentSpan);
 });
 
 test("endSpan records http metrics only once per message", () => {
@@ -1465,6 +1547,65 @@ test("endSpan records terminal HTTP metrics for custom responder when response i
 		res: { _res: { statusCode: 204, finished: true } },
 	};
 
+	endSpan(mockRed, msg, null, node);
+
+	assert.equal(recordSpy.mock.calls.length, 1);
+	assert.equal(msg.otelHttpMetricsRecorded, true);
+});
+
+test("endSpan records custom terminal HTTP metrics with parent span context when span exists", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const sharedState = getSharedState();
+	const recordSpy = test.mock.fn();
+	sharedState.metrics.requestDuration = { record: recordSpy };
+	const node = { id: "custom-responder", type: "custom responder", z: "flow" };
+	const msg = {
+		_msgid: "metrics-custom-trace-linked-msg",
+		otelStartTime: Date.now() - 40,
+		req: { method: "GET", path: "/custom" },
+		res: { _res: { statusCode: 204, finished: true } },
+	};
+	const rootNode = {
+		id: "root-node",
+		type: "http in",
+		name: "Ingress",
+		z: "flow",
+		method: "GET",
+		url: "/custom",
+	};
+	createSpan(mockRed, tracer, msg, rootNode, {}, false);
+	const span = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(span);
+	const parentSpan = getMsgSpans().get(msg._msgid)?.parentSpan;
+	assert.ok(parentSpan);
+
+	endSpan(mockRed, msg, null, node);
+
+	assert.equal(recordSpy.mock.calls.length, 1);
+	const call = recordSpy.mock.calls[0];
+	assert.equal(call.arguments.length, 3);
+	assert.equal(otelApi.trace.getSpan(call.arguments[2]), parentSpan);
+});
+
+test("endSpan records http metrics once per message when span context is available", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const sharedState = getSharedState();
+	const recordSpy = test.mock.fn();
+	sharedState.metrics.requestDuration = { record: recordSpy };
+	const msg = {
+		_msgid: "metrics-once-with-span-msg",
+		otelStartTime: Date.now() - 25,
+		req: { method: "GET", path: "/once-with-span" },
+		res: { _res: { statusCode: 200 } },
+	};
+	const node = { id: "resp-node", type: "http response", z: "flow" };
+	createSpan(mockRed, tracer, msg, node, {}, false);
+
+	endSpan(mockRed, msg, null, node);
 	endSpan(mockRed, msg, null, node);
 
 	assert.equal(recordSpy.mock.calls.length, 1);
@@ -2889,6 +3030,124 @@ test("module initialization tolerates plugin-only Node-RED context", async () =>
 	await runtimePlugin.onClose();
 });
 
+test("module initialization logs warning when runtime plugin API is unavailable", () => {
+	const warnSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	otelModule({
+		settings: {},
+		nodes: mockRed.nodes,
+		hooks: {},
+	});
+	assert.ok(
+		warnSpy.mock.calls.some(
+			(call) =>
+				call.arguments[0]?.level === nodeRedUtilStub.log.WARN &&
+				String(call.arguments[0]?.msg).includes(
+					"runtime plugin API is unavailable",
+				),
+		),
+	);
+});
+
+test("runtime plugin onadd catches initialization errors", async () => {
+	const registeredPlugins = new Map();
+	const brokenRed = {
+		settings: {
+			opentelemetry: {
+				url: "http://localhost:4318/v1/traces",
+			},
+		},
+		nodes: mockRed.nodes,
+		hooks: {
+			add: () => {
+				throw new Error("hook add failed");
+			},
+			remove: () => {},
+		},
+		plugins: {
+			registerPlugin: (id, plugin) => {
+				registeredPlugins.set(id, plugin);
+			},
+		},
+	};
+	const errorSpy = test.mock.method(nodeRedUtilStub.log, "log");
+
+	otelModule(brokenRed);
+	const plugin = registeredPlugins.get("opentelemetry-runtime");
+	assert.ok(plugin);
+	await plugin.onadd();
+
+	assert.ok(
+		errorSpy.mock.calls.some(
+			(call) =>
+				call.arguments[0]?.level === nodeRedUtilStub.log.ERROR &&
+				String(call.arguments[0]?.msg).includes(
+					"runtime plugin settings failed",
+				),
+		),
+	);
+});
+
+test("runtime plugin onremove catches shutdown errors", async () => {
+	const registeredPlugins = new Map();
+	const brokenRed = {
+		settings: {
+			opentelemetry: {
+				url: "http://localhost:4318/v1/traces",
+			},
+		},
+		nodes: mockRed.nodes,
+		hooks: {
+			add: () => {},
+			remove: () => {
+				throw new Error("hook remove failed");
+			},
+		},
+		plugins: {
+			registerPlugin: (id, plugin) => {
+				registeredPlugins.set(id, plugin);
+			},
+		},
+	};
+	const errorSpy = test.mock.method(nodeRedUtilStub.log, "log");
+
+	otelModule(brokenRed);
+	const plugin = registeredPlugins.get("opentelemetry-runtime");
+	assert.ok(plugin);
+	await plugin.onadd();
+	await plugin.onremove();
+
+	assert.ok(
+		errorSpy.mock.calls.some(
+			(call) =>
+				call.arguments[0]?.level === nodeRedUtilStub.log.ERROR &&
+				String(call.arguments[0]?.msg).includes(
+					"runtime plugin shutdown failed",
+				),
+		),
+	);
+});
+
+test("resetState shuts down existing providers and clears interval", () => {
+	const sharedState = getSharedState();
+	let tracerShutdownCalled = 0;
+	let meterShutdownCalled = 0;
+	let loggerShutdownCalled = 0;
+	sharedState.provider = { shutdown: () => tracerShutdownCalled++ };
+	sharedState.meterProvider = { shutdown: () => meterShutdownCalled++ };
+	sharedState.loggerProvider = { shutdown: () => loggerShutdownCalled++ };
+	sharedState.intervalId = setInterval(() => {}, 10);
+
+	resetState();
+
+	assert.equal(tracerShutdownCalled, 1);
+	assert.equal(meterShutdownCalled, 1);
+	assert.equal(loggerShutdownCalled, 1);
+	assert.equal(sharedState.provider, null);
+	assert.equal(sharedState.meterProvider, null);
+	assert.equal(sharedState.loggerProvider, null);
+	assert.equal(sharedState.intervalId, null);
+});
+
 test("runtime plugin onSettings updates runtime config", async () => {
 	const { runtimePlugin } = createPluginHarness(false);
 	assert.ok(runtimePlugin);
@@ -3215,5 +3474,307 @@ test("pluginLog should not apply plugin log-level filtering", () => {
 	assert.equal(logSpy.mock.calls.length, 1);
 	assert.equal(logSpy.mock.calls[0].arguments[0].msg, "still forwarded");
 	assert.equal(logSpy.mock.calls[0].arguments[0].level, nodeRedUtilStub.log.INFO);
+});
+
+test("pluginLog falls back to console logging when Node-RED log API is unavailable", () => {
+	const originalResolver = Module._resolveFilename;
+	const errorSpy = test.mock.method(console, "error");
+	const warnSpy = test.mock.method(console, "warn");
+	const infoSpy = test.mock.method(console, "log");
+	const sharedState = getSharedState();
+	sharedState.nodeRedLogApi = null;
+
+	try {
+		Module._resolveFilename = function (request, parent, isMain, options) {
+			if (request === "@node-red/util") {
+				throw new Error("forced missing @node-red/util");
+			}
+			return originalResolveFilename.call(this, request, parent, isMain, options);
+		};
+		pluginLog("error", "console error message");
+		pluginLog("warn", "console warn message");
+		pluginLog("info", "console info message");
+		pluginLog("debug", "console debug message");
+		pluginLog("trace", "console trace message");
+	} finally {
+		Module._resolveFilename = originalResolver;
+	}
+
+	assert.equal(errorSpy.mock.calls.length, 1);
+	assert.equal(errorSpy.mock.calls[0].arguments[0], "console error message");
+	assert.equal(warnSpy.mock.calls.length, 1);
+	assert.equal(warnSpy.mock.calls[0].arguments[0], "console warn message");
+	assert.equal(infoSpy.mock.calls.length, 3);
+	assert.equal(infoSpy.mock.calls[0].arguments[0], "console info message");
+	assert.equal(infoSpy.mock.calls[1].arguments[0], "console debug message");
+	assert.equal(infoSpy.mock.calls[2].arguments[0], "console trace message");
+});
+
+test("pluginLog console fallback includes error objects when provided", () => {
+	const originalResolver = Module._resolveFilename;
+	const boom = new Error("boom");
+	const errorSpy = test.mock.method(console, "error");
+	const warnSpy = test.mock.method(console, "warn");
+	const logSpy = test.mock.method(console, "log");
+	const sharedState = getSharedState();
+	sharedState.nodeRedLogApi = null;
+
+	try {
+		Module._resolveFilename = function (request, parent, isMain, options) {
+			if (request === "@node-red/util") {
+				throw new Error("forced missing @node-red/util");
+			}
+			return originalResolveFilename.call(this, request, parent, isMain, options);
+		};
+		pluginLog("error", "error with object", boom);
+		pluginLog("warn", "warn with object", boom);
+		pluginLog("info", "info with object", boom);
+	} finally {
+		Module._resolveFilename = originalResolver;
+	}
+
+	assert.equal(errorSpy.mock.calls.length, 1);
+	assert.equal(errorSpy.mock.calls[0].arguments[0], "error with object");
+	assert.equal(errorSpy.mock.calls[0].arguments[1], boom);
+	assert.equal(warnSpy.mock.calls.length, 1);
+	assert.equal(warnSpy.mock.calls[0].arguments[0], "warn with object");
+	assert.equal(warnSpy.mock.calls[0].arguments[1], boom);
+	assert.equal(logSpy.mock.calls.length, 1);
+	assert.equal(logSpy.mock.calls[0].arguments[0], "info with object");
+	assert.equal(logSpy.mock.calls[0].arguments[1], boom);
+});
+
+test("resolveOpenTelemetryConfig accepts additional protocol aliases", () => {
+	process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "json";
+	const jsonResolved = resolveOpenTelemetryConfig({}, {});
+	assert.equal(jsonResolved.protocol, "http");
+	assert.equal(jsonResolved.tracesProtocol, "http");
+	assert.equal(jsonResolved.metricsProtocol, "http");
+	assert.equal(jsonResolved.logsProtocol, "http");
+
+	process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "protobuf";
+	const protoResolved = resolveOpenTelemetryConfig({}, {});
+	assert.equal(protoResolved.protocol, "proto");
+	assert.equal(protoResolved.tracesProtocol, "proto");
+	assert.equal(protoResolved.metricsProtocol, "proto");
+	assert.equal(protoResolved.logsProtocol, "proto");
+});
+
+test("resolveOpenTelemetryConfig ignores unsupported protocols", () => {
+	process.env.OTEL_EXPORTER_OTLP_PROTOCOL = "invalid-protocol";
+	const resolved = resolveOpenTelemetryConfig({}, {});
+	assert.equal(resolved.protocol, "http");
+	assert.equal(resolved.tracesProtocol, "http");
+	assert.equal(resolved.metricsProtocol, "http");
+	assert.equal(resolved.logsProtocol, "http");
+});
+
+test("ensureSignalPath handles parse failures and append modes", () => {
+	assert.equal(ensureSignalPath(undefined, "/v1/traces"), undefined);
+	assert.equal(
+		ensureSignalPath("://bad-url", "/v1/traces"),
+		"://bad-url",
+	);
+	assert.equal(
+		ensureSignalPath("http://localhost", "/v1/traces"),
+		"http://localhost/v1/traces",
+	);
+	assert.equal(
+		ensureSignalPath("http://localhost/api", "/v1/traces", true),
+		"http://localhost/api/v1/traces",
+	);
+	assert.equal(
+		ensureSignalPath("http://localhost/v1/traces", "/v1/traces", true),
+		"http://localhost/v1/traces",
+	);
+});
+
+test("ensureSignalPathFromGenericEndpoint remaps, appends, and handles invalid URLs", () => {
+	assert.equal(
+		ensureSignalPathFromGenericEndpoint("://bad-url", "/v1/metrics"),
+		"://bad-url",
+	);
+	assert.equal(
+		ensureSignalPathFromGenericEndpoint("http://localhost", "/v1/metrics"),
+		"http://localhost/v1/metrics",
+	);
+	assert.equal(
+		ensureSignalPathFromGenericEndpoint(
+			"http://localhost/custom/v1/traces",
+			"/v1/logs",
+		),
+		"http://localhost/custom/v1/logs",
+	);
+	assert.equal(
+		ensureSignalPathFromGenericEndpoint("http://localhost/custom", "/v1/logs"),
+		"http://localhost/custom/v1/logs",
+	);
+	assert.equal(
+		ensureSignalPathFromGenericEndpoint("http://localhost/custom/v1/logs", "/v1/logs"),
+		"http://localhost/custom/v1/logs",
+	);
+});
+
+test("normalizeGrpcEndpoint handles defaults, signal paths, and malformed URLs", () => {
+	assert.equal(normalizeGrpcEndpoint(undefined), undefined);
+	assert.equal(
+		normalizeGrpcEndpoint("http://localhost:4318/v1/traces"),
+		"http://localhost:4317",
+	);
+	assert.equal(
+		normalizeGrpcEndpoint("http://localhost:4318/v1/metrics"),
+		"http://localhost:4317",
+	);
+	assert.equal(
+		normalizeGrpcEndpoint("http://localhost:4318/v1/logs"),
+		"http://localhost:4317",
+	);
+	assert.equal(normalizeGrpcEndpoint("://bad-url"), "://bad-url");
+	assert.equal(
+		normalizeGrpcEndpoint("http://collector:4318/v1/traces"),
+		"http://collector:4318/",
+	);
+	assert.equal(
+		normalizeGrpcEndpoint("http://collector:4318/custom"),
+		"http://collector:4318/custom",
+	);
+});
+
+test("protocol and log-level resolver helpers cover aliases and invalid values", () => {
+	assert.equal(resolveProtocol("grpc"), "grpc");
+	assert.equal(resolveProtocol("http/protobuf"), "proto");
+	assert.equal(resolveProtocol("proto"), "proto");
+	assert.equal(resolveProtocol("json"), "http");
+	assert.equal(resolveProtocol("http/json"), "http");
+	assert.equal(resolveProtocol("invalid"), undefined);
+
+	assert.equal(resolveLogLevel("OFF"), "off");
+	assert.equal(resolveLogLevel("trace"), "trace");
+	assert.equal(resolveLogLevel("invalid"), undefined);
+});
+
+test("resolveNodeRedLogLevel handles object variants and invalid settings", () => {
+	assert.equal(resolveNodeRedLogLevel(undefined), undefined);
+	assert.equal(resolveNodeRedLogLevel({}), undefined);
+	assert.equal(resolveNodeRedLogLevel({ logging: {} }), undefined);
+	assert.equal(
+		resolveNodeRedLogLevel({
+			logging: {
+				console: { level: "fatal" },
+			},
+		}),
+		"error",
+	);
+	assert.equal(
+		resolveNodeRedLogLevel({
+			logging: {
+				customTarget: { level: "debug" },
+			},
+		}),
+		"debug",
+	);
+	assert.equal(
+		resolveNodeRedLogLevel({
+			logging: {
+				console: { level: "invalid" },
+				level: "warn",
+			},
+		}),
+		"warn",
+	);
+});
+
+test("exporter env resolver handles defaults and precedence", () => {
+	assert.deepEqual(parseExporterEnv(undefined), []);
+	assert.deepEqual(parseExporterEnv(" OTLP , none "), ["otlp", "none"]);
+	assert.equal(resolveSignalEnabledFromEnv(undefined), undefined);
+	assert.equal(resolveSignalEnabledFromEnv(""), undefined);
+	assert.equal(resolveSignalEnabledFromEnv("otlp"), true);
+	assert.equal(resolveSignalEnabledFromEnv("none"), false);
+	assert.equal(resolveSignalEnabledFromEnv("none,otlp"), false);
+	assert.equal(resolveSignalEnabledFromEnv("zipkin"), false);
+});
+
+test("resolveNodeRedSeverity maps numeric and textual levels", () => {
+	const logApi = nodeRedUtilStub.log;
+	assert.equal(resolveNodeRedSeverity(logApi.FATAL, logApi).severityText, "FATAL");
+	assert.equal(resolveNodeRedSeverity(logApi.ERROR, logApi).severityText, "ERROR");
+	assert.equal(resolveNodeRedSeverity(logApi.WARN, logApi).severityText, "WARN");
+	assert.equal(resolveNodeRedSeverity(logApi.DEBUG, logApi).severityText, "DEBUG");
+	assert.equal(resolveNodeRedSeverity(logApi.TRACE, logApi).severityText, "TRACE");
+	assert.equal(resolveNodeRedSeverity("warning", null).severityText, "WARN");
+	assert.equal(resolveNodeRedSeverity("audit", null).severityText, "INFO");
+	assert.equal(resolveNodeRedSeverity("metric", null).severityText, "INFO");
+	assert.equal(resolveNodeRedSeverity("info", null).severityText, "INFO");
+	assert.equal(resolveNodeRedSeverity("unknown", null).severityText, "INFO");
+});
+
+test("node type normalization and skip filtering behave correctly", () => {
+	assert.equal(normalizeNodeType(" Function "), "function");
+	assert.equal(normalizeNodeType(undefined), "");
+	const sharedState = getSharedState();
+	sharedState.excludedNodeTypesList = ["debug"];
+	sharedState.includedNodeTypesList = [];
+	assert.equal(shouldSkipNodeType("debug"), true);
+	assert.equal(shouldSkipNodeType("function"), false);
+	sharedState.includedNodeTypesList = ["function"];
+	assert.equal(shouldSkipNodeType("function"), false);
+	assert.equal(shouldSkipNodeType("inject"), true);
+});
+
+test("parseNodeUrl supports absolute, relative, and invalid URLs", () => {
+	const absolute = parseNodeUrl("http://example.com/path");
+	assert.ok(absolute);
+	assert.equal(absolute.isAbsolute, true);
+	assert.equal(absolute.url.pathname, "/path");
+
+	const relative = parseNodeUrl("/relative/path");
+	assert.ok(relative);
+	assert.equal(relative.isAbsolute, false);
+	assert.equal(relative.url.pathname, "/relative/path");
+
+	assert.equal(parseNodeUrl("http://[::invalid"), undefined);
+});
+
+test("resolveSpanKind covers common transport kinds", () => {
+	assert.equal(resolveSpanKind("http in"), otelApi.SpanKind.SERVER);
+	assert.equal(resolveSpanKind("http request"), otelApi.SpanKind.CLIENT);
+	assert.equal(resolveSpanKind("mqtt in"), otelApi.SpanKind.CONSUMER);
+	assert.equal(resolveSpanKind("mqtt out"), otelApi.SpanKind.PRODUCER);
+	assert.equal(resolveSpanKind("function"), otelApi.SpanKind.INTERNAL);
+});
+
+test("HTTP helper predicates and auto attributes handle mixed message shapes", () => {
+	const msg = {
+		req: {
+			ip: "127.0.0.1",
+			method: "GET",
+			path: "/orders",
+			headers: { "user-agent": "curl/8" },
+		},
+		res: { _res: { statusCode: 200, finished: true } },
+	};
+	const node = { id: "n1", type: "custom responder", z: "flow", method: "GET", url: "/orders" };
+	assert.equal(hasHttpServerContext(msg, node), true);
+	assert.equal(hasHttpResponseContext(msg), true);
+	assert.equal(shouldHandleTerminalHttpResponse(msg, { id: "n2", type: "http response", z: "flow" }), true);
+	assert.equal(shouldHandleTerminalHttpResponse(msg, node), true);
+	assert.equal(shouldHandleTerminalHttpResponse({ req: {}, res: { _res: { finished: false } } }, node), false);
+
+	const attrs = buildAutoSpanAttributes(msg, {
+		id: "http-req-node",
+		type: "http request",
+		z: "flow",
+		url: "http://api.example.com:8080/v1/items",
+	});
+	assert.equal(attrs["http.request.method"], "GET");
+	assert.equal(attrs["url.path"], "/v1/items");
+	assert.equal(attrs["server.address"], "api.example.com");
+	assert.equal(attrs["server.port"], "8080");
+});
+
+test("isSubflowNodeType identifies subflow prefixed node types", () => {
+	assert.equal(isSubflowNodeType("subflow:abc"), true);
+	assert.equal(isSubflowNodeType("function"), false);
 });
 
