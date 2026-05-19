@@ -741,7 +741,7 @@ test("logEvent can disable flow event logs independently from runtime logs", () 
 	assert.equal(emitSpy.mock.calls.length, 0);
 });
 
-test("logEvent emits with explicit span context and trace/span identifiers when message span exists", () => {
+test("logEvent emits with explicit span context when message span exists", () => {
 	setLogLevel("info");
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
@@ -754,11 +754,6 @@ test("logEvent emits with explicit span context and trace/span identifiers when 
 	const node = { id: "function-node", type: "function", z: "flow" };
 	const eventSpan = createSpan(mockRed, tracer, msg, node, {}, false);
 	assert.ok(eventSpan);
-	eventSpan.spanContext = () => ({
-		traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
-		spanId: "00f067aa0ba902b7",
-		traceFlags: 1,
-	});
 	const parent = getMsgSpans().get("log-context-msg");
 	assert.ok(parent);
 
@@ -767,8 +762,6 @@ test("logEvent emits with explicit span context and trace/span identifiers when 
 	assert.equal(emitSpy.mock.calls.length, 1);
 	const emitArg = emitSpy.mock.calls[0].arguments[0];
 	assert.equal(otelApi.trace.getSpan(emitArg.context), eventSpan);
-	assert.equal(emitArg.attributes.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
-	assert.equal(emitArg.attributes.span_id, "00f067aa0ba902b7");
 });
 
 test("logEvent falls back to active context when no message span exists", () => {
@@ -781,8 +774,6 @@ test("logEvent falls back to active context when no message span exists", () => 
 	assert.equal(emitSpy.mock.calls.length, 1);
 	const emitArg = emitSpy.mock.calls[0].arguments[0];
 	assert.equal(otelApi.trace.getSpan(emitArg.context), undefined);
-	assert.equal(emitArg.attributes.trace_id, undefined);
-	assert.equal(emitArg.attributes.span_id, undefined);
 });
 
 test("createSpan should handle various node types correctly", () => {

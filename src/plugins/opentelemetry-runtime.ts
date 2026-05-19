@@ -1602,20 +1602,13 @@ function logEvent(
 	}
 
 	try {
-		const resolveEventSpan = (): Span | undefined => {
-			const parent = msgSpans.get(msgId);
-			if (!parent) {
-				return undefined;
-			}
-			const spanNode =
-				event.node?.node || event.destination?.node || event.source?.node;
-			if (spanNode) {
-				const spanId = getSpanId(event.msg, spanNode);
-				return parent.spans.get(spanId) || parent.parentSpan;
-			}
-			return parent.parentSpan;
-		};
-		const spanForLog = resolveEventSpan();
+		const parent = msgSpans.get(msgId);
+		const spanNode =
+			event.node?.node || event.destination?.node || event.source?.node;
+		const spanForLog =
+			spanNode && parent
+				? parent.spans.get(getSpanId(event.msg, spanNode)) || parent.parentSpan
+				: parent?.parentSpan;
 		const emitContext = spanForLog
 			? trace.setSpan(context.active(), spanForLog)
 			: context.active();
@@ -1624,16 +1617,6 @@ function logEvent(
 			"node_red.msg._msgid": _msgId,
 			"node_red.event_type": eventType,
 		};
-		const spanContext =
-			typeof spanForLog?.spanContext === "function"
-				? spanForLog.spanContext()
-				: undefined;
-		if (spanContext?.traceId) {
-			attributes["trace_id"] = spanContext.traceId;
-		}
-		if (spanContext?.spanId) {
-			attributes["span_id"] = spanContext.spanId;
-		}
 		if (flowName) {
 			attributes[ATTR_FLOW_NAME] = flowName;
 		}
@@ -2235,13 +2218,14 @@ function endSpan(
 			if (!msgId) {
 				return;
 			}
+			const parentSpan = msgSpans.get(msgId)?.parentSpan;
 			const msgSpanId = getSpanId(msg, nodeDefinition);
 			const spanContext = resolveSpanContextForEnd(msgId, msgSpanId);
 			recordHttpResponseMetricsIfNeeded(
 				msgId,
 				msg,
 				nodeDefinition,
-				spanContext?.parent.parentSpan,
+				parentSpan,
 			);
 			if (!spanContext) {
 			return;
