@@ -1394,36 +1394,45 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	if (!isTextMapCarrier(msg)) {
 		return [{}];
 	}
-	const existingCarriers = listPropagationCarriers(msg);
-	const ensureHeadersCarrier = (): TextMapCarrier | undefined =>
-		PROPAGATION_CARRIER_ADAPTERS[
-			PROPAGATION_CARRIER_ADAPTERS.length - 1
-		].ensureCarrier?.(msg);
-	if (existingCarriers.length > 0) {
+	try {
+		const existingCarriers = listPropagationCarriers(msg);
+		const ensureHeadersCarrier = (): TextMapCarrier | undefined =>
+			PROPAGATION_CARRIER_ADAPTERS[
+				PROPAGATION_CARRIER_ADAPTERS.length - 1
+			]?.ensureCarrier?.(msg);
+		if (existingCarriers.length > 0) {
+			const headersCarrier = ensureHeadersCarrier();
+			if (headersCarrier && !existingCarriers.includes(headersCarrier)) {
+				existingCarriers.push(headersCarrier);
+			}
+			return existingCarriers;
+		}
+		let createdCarrier: TextMapCarrier | undefined;
+		for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
+			createdCarrier = adapter.ensureCarrier?.(msg);
+			if (createdCarrier) {
+				break;
+			}
+		}
+		if (!createdCarrier) {
+			// Absolute fallback for malformed message shapes.
+			msg.headers = {};
+			return [msg.headers as TextMapCarrier];
+		}
+		const createdCarriers: TextMapCarrier[] = [createdCarrier];
 		const headersCarrier = ensureHeadersCarrier();
-		if (headersCarrier && !existingCarriers.includes(headersCarrier)) {
-			existingCarriers.push(headersCarrier);
+		if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
+			createdCarriers.push(headersCarrier);
 		}
-		return existingCarriers;
+		return createdCarriers;
+	} catch (error) {
+		pluginLog(
+			"warn",
+			"Failed to resolve propagation carriers for message mutation; using safe fallback.",
+			error,
+		);
+		return [{}];
 	}
-	let createdCarrier: TextMapCarrier | undefined;
-	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
-		createdCarrier = adapter.ensureCarrier?.(msg);
-		if (createdCarrier) {
-			break;
-		}
-	}
-	if (!createdCarrier) {
-		// Absolute fallback for malformed message shapes.
-		msg.headers = {};
-		return [msg.headers as TextMapCarrier];
-	}
-	const createdCarriers: TextMapCarrier[] = [createdCarrier];
-	const headersCarrier = ensureHeadersCarrier();
-	if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
-		createdCarriers.push(headersCarrier);
-	}
-	return createdCarriers;
 }
 
 function clearPropagationFields(carrier: TextMapCarrier): void {
@@ -2114,7 +2123,8 @@ function applyErrorToSpan(
 	}
 	span?.setStatus({
 		code: SpanStatusCode.ERROR,
-		message: error instanceof Error ? error.message : String(error),
+		message:
+			exception instanceof Error ? exception.message : stringifyLogBody(exception),
 	});
 	parent.parentSpan.setStatus({ code: SpanStatusCode.ERROR });
 	return true;

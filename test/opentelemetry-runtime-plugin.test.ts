@@ -1172,6 +1172,16 @@ test("resolvePropagationCarriers tolerates nullish or invalid message inputs", (
 	assert.equal(typeof carriersFromUndefined[0], "object");
 });
 
+test("resolvePropagationCarriers handles frozen message mutation failures safely", () => {
+	const frozenMsg = Object.freeze({
+		_msgid: "frozen-msg",
+	});
+	assert.doesNotThrow(() => resolvePropagationCarriers(frozenMsg as any));
+	const carriers = resolvePropagationCarriers(frozenMsg as any);
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(typeof carriers[0], "object");
+});
+
 test("endSpan should handle http request and response correctly", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
@@ -1296,6 +1306,31 @@ test("endSpan should stringify non-Error exception objects", () => {
 		String(recordExceptionSpy.mock.calls[0].arguments[0]),
 		/"reason":"bad payload"/,
 	);
+});
+
+test("endSpan should use msg.error for span status message when available", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "status-msg-error", error: { reason: "bad payload" } };
+	const node = {
+		id: "status-msg-node",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	const setStatusSpy = test.mock.method(childSpan, "setStatus");
+
+	endSpan(mockRed, msg, "generic error", node);
+
+	assert.equal(setStatusSpy.mock.calls.length > 0, true);
+	const errorStatusCall = setStatusSpy.mock.calls.find(
+		(call) => call.arguments?.[0]?.code === 2,
+	);
+	assert.ok(errorStatusCall);
+	assert.match(String(errorStatusCall.arguments[0].message), /"reason":"bad payload"/);
 });
 
 test("endSpan should continue cleanup when child span end throws", () => {
