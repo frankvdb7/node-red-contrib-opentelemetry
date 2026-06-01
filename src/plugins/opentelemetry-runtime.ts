@@ -1445,7 +1445,7 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 		if (!createdCarrier) {
 			// Absolute fallback for malformed message shapes.
 			if (Object.isExtensible(msg)) {
-				msg.headers = {};
+				msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
 				return [msg.headers as TextMapCarrier];
 			}
 			return [{}];
@@ -1463,7 +1463,7 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 		}
 		if (createdCarriers.length === 0) {
 			if (Object.isExtensible(msg)) {
-				msg.headers = {};
+				msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
 				return [msg.headers as TextMapCarrier];
 			}
 			return [{}];

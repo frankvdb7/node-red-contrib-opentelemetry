@@ -1269,6 +1269,30 @@ test("resolvePropagationCarriers does not emit warning logs for non-extensible m
 	);
 });
 
+test("resolvePropagationCarriers fallback preserves existing headers when recreating extensible carrier", () => {
+	const headers = Object.freeze({
+		authorization: "Bearer token",
+		"content-type": "application/json",
+		"x-custom": "value",
+	});
+	const msg = {
+		_msgid: "preserve-headers-msg",
+		headers,
+	};
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(
+		typeof msg.headers === "object" && msg.headers !== null && !Array.isArray(msg.headers),
+		true,
+	);
+	assert.notEqual(msg.headers, headers);
+	assert.equal(msg.headers.authorization, "Bearer token");
+	assert.equal(msg.headers["content-type"], "application/json");
+	assert.equal(msg.headers["x-custom"], "value");
+});
+
 test("endSpan should handle http request and response correctly", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
