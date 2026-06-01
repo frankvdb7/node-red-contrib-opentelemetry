@@ -818,7 +818,7 @@ test("logEvent falls back to active context when no message span exists", () => 
 
 test("logEvent ignores placeholder child spans that do not implement spanContext", () => {
 	setLogLevel("info");
-	let resolvedSpanContext;
+	let resolvedSpanContext = null;
 	const logger = {
 		emit: (record) => {
 			resolvedSpanContext = otelApi.trace.getSpanContext(record.context);
@@ -857,7 +857,7 @@ test("logEvent ignores placeholder child spans that do not implement spanContext
 
 test("logEvent falls back when child spanContext throws", () => {
 	setLogLevel("info");
-	let resolvedSpanContext;
+	let resolvedSpanContext = null;
 	const logger = {
 		emit: (record) => {
 			resolvedSpanContext = otelApi.trace.getSpanContext(record.context);

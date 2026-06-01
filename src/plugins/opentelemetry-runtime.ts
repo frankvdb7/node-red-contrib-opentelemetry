@@ -1695,15 +1695,19 @@ function logEvent(
 
 	try {
 		const parent = msgSpans.get(msgId);
+		const parentSpan = parent?.parentSpan;
 		const spanNode =
 			event.node?.node || event.destination?.node || event.source?.node;
 		const candidateSpanForLog =
 			spanNode && parent
-				? parent.spans.get(getSpanId(event.msg, spanNode)) || parent.parentSpan
-				: parent?.parentSpan;
+				? parent.spans.get(getSpanId(event.msg, spanNode)) || parentSpan
+				: parentSpan;
+		const candidateSpanContext = resolveSafeSpanContext(candidateSpanForLog);
 		const spanContextForLog =
-			resolveSafeSpanContext(candidateSpanForLog) ??
-			resolveSafeSpanContext(parent?.parentSpan);
+			candidateSpanContext ??
+			(candidateSpanForLog === parentSpan
+				? undefined
+				: resolveSafeSpanContext(parentSpan));
 		const emitContext = spanContextForLog
 			? trace.setSpanContext(context.active(), spanContextForLog)
 			: context.active();
