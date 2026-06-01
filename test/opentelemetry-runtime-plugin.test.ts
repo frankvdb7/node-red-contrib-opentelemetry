@@ -97,6 +97,12 @@ test.afterEach(() => {
 });
 
 function createFakeSpan(name, options = {}) {
+	const counterHex = (createFakeSpan.counter++).toString(16);
+	const spanContext = {
+		traceId: counterHex.padStart(32, "a").slice(-32),
+		spanId: counterHex.padStart(16, "b").slice(-16),
+		traceFlags: 1,
+	};
 	return {
 		name,
 		options,
@@ -118,8 +124,12 @@ function createFakeSpan(name, options = {}) {
 		updateName(newName) {
 			this.updatedName = newName;
 		},
+		spanContext() {
+			return spanContext;
+		},
 	};
 }
+createFakeSpan.counter = 1;
 
 function getTraceIdFromTraceparent(traceparent) {
 	return String(traceparent || "").split("-")[1];
@@ -788,7 +798,10 @@ test("logEvent emits with explicit span context when message span exists", () =>
 
 	assert.equal(emitSpy.mock.calls.length, 1);
 	const emitArg = emitSpy.mock.calls[0].arguments[0];
-	assert.equal(otelApi.trace.getSpan(emitArg.context), eventSpan);
+	assert.equal(
+		otelApi.trace.getSpanContext(emitArg.context)?.traceId,
+		eventSpan.spanContext().traceId,
+	);
 });
 
 test("logEvent falls back to active context when no message span exists", () => {
@@ -801,6 +814,79 @@ test("logEvent falls back to active context when no message span exists", () => 
 	assert.equal(emitSpy.mock.calls.length, 1);
 	const emitArg = emitSpy.mock.calls[0].arguments[0];
 	assert.equal(otelApi.trace.getSpan(emitArg.context), undefined);
+});
+
+test("logEvent ignores placeholder child spans that do not implement spanContext", () => {
+	setLogLevel("info");
+	let resolvedSpanContext = null;
+	const logger = {
+		emit: (record) => {
+			resolvedSpanContext = otelApi.trace.getSpanContext(record.context);
+		},
+	};
+	const sharedState = getSharedState();
+	sharedState.logger = logger;
+	const tracer = {
+		startSpan: (name, options) => {
+			const span = createFakeSpan(name, options);
+			const spanContext = {
+				traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				spanId: "bbbbbbbbbbbbbbbb",
+				traceFlags: 1,
+			};
+			return { ...span, spanContext: () => spanContext };
+		},
+	};
+	const msg = { _msgid: "log-fake-span-msg", z: "flow" };
+	const rootNode = { id: "inject-node", type: "inject", z: "flow" };
+	const excludedNode = { id: "debug-node", type: "debug", z: "flow" };
+
+	createSpan(mockRed, tracer, msg, rootNode, {}, false);
+	createSpan(mockRed, tracer, msg, excludedNode, {}, true);
+
+	const parent = getMsgSpans().get("log-fake-span-msg");
+	assert.ok(parent);
+	assert.ok(parent.spans.has("log-fake-span-msg#debug-node"));
+
+	assert.doesNotThrow(() => {
+		logEvent(mockRed, {}, "test", { msg, node: { node: excludedNode } });
+	});
+	assert.ok(resolvedSpanContext);
+	assert.equal(resolvedSpanContext.traceId, parent.parentSpan.spanContext().traceId);
+});
+
+test("logEvent falls back when child spanContext throws", () => {
+	setLogLevel("info");
+	let resolvedSpanContext = null;
+	const logger = {
+		emit: (record) => {
+			resolvedSpanContext = otelApi.trace.getSpanContext(record.context);
+		},
+	};
+	const sharedState = getSharedState();
+	sharedState.logger = logger;
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "log-throwing-span-msg", z: "flow" };
+	const rootNode = { id: "inject-node", type: "inject", z: "flow" };
+	const childNode = { id: "function-node", type: "function", z: "flow" };
+
+	createSpan(mockRed, tracer, msg, rootNode, {}, false);
+
+	const parent = getMsgSpans().get("log-throwing-span-msg");
+	assert.ok(parent);
+	parent.spans.set("log-throwing-span-msg#function-node", {
+		spanContext: () => {
+			throw new Error("broken span context");
+		},
+	});
+
+	assert.doesNotThrow(() => {
+		logEvent(mockRed, {}, "test", { msg, node: { node: childNode } });
+	});
+	assert.ok(resolvedSpanContext);
+	assert.equal(resolvedSpanContext.traceId, parent.parentSpan.spanContext().traceId);
 });
 
 test("createSpan should handle various node types correctly", () => {
