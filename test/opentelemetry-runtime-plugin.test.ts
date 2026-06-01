@@ -70,6 +70,7 @@ const {
 	resolvePropagationCarriers,
 	setTraceContextHeaderAliases,
 	getSharedState,
+	clearPropagationFields,
 } = otelModule.__test__;
 
 const originalEnv = { ...process.env };
@@ -2290,11 +2291,25 @@ test("postDeliver.otel hook removes stale http propagation headers before inject
 		sendEvent.msg.headers.traceparent,
 		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
 	);
-	assert.equal(sendEvent.msg.headers.tracestate, "old=state");
-	assert.equal(sendEvent.msg.headers.baggage, undefined);
 	assert.equal(sendEvent.msg.headers.authorization, "Bearer token");
 
 	await runtimePlugin.onClose();
+});
+
+test("clearPropagationFields removes W3C propagation fields case-insensitively", () => {
+	const carrier = {
+		traceparent: "old-traceparent",
+		TraceState: "old=state",
+		Baggage: "old=value",
+		authorization: "Bearer token",
+	};
+
+	clearPropagationFields(carrier);
+
+	assert.equal(carrier.traceparent, undefined);
+	assert.equal(carrier.TraceState, undefined);
+	assert.equal(carrier.Baggage, undefined);
+	assert.equal(carrier.authorization, "Bearer token");
 });
 
 test("postDeliver.otel fallback should create msg.headers when missing", async () => {

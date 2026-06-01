@@ -1293,10 +1293,14 @@ function removeCarrierFieldIgnoringCase(
 	carrier: TextMapCarrier,
 	fieldName: string,
 ): void {
-	const key = getCarrierFieldNameIgnoringCase(carrier, fieldName);
-	if (key !== undefined) {
-		delete carrier[key];
+	const normalizedFieldName = fieldName.toLowerCase();
+
+	for (const key of Object.keys(carrier)) {
+		if (key.toLowerCase() === normalizedFieldName) {
+			delete carrier[key];
+		}
 	}
+
 }
 
 function calculateNodeRedHttpRequestHeaderHash(
@@ -2923,6 +2927,7 @@ module.exports.__test__ = {
 	resolvePropagationCarrier,
 	resolvePropagationCarriers,
 	listPropagationCarriers,
+	clearPropagationFields,
 	getMsgSpans: () => msgSpans,
 	clearInterval: () => {
 		if (sharedState.intervalId) {
