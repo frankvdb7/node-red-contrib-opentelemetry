@@ -1447,6 +1447,33 @@ test("endSpan should prefer non-Error exception.message for span status message"
 	assert.equal(errorStatusCall.arguments[0].message, "custom object message");
 });
 
+test("endSpan should stringify non-Error exception when message is not a string", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = {
+		_msgid: "status-nonstring-message",
+		error: { message: { nested: "value" }, reason: "bad payload" },
+	};
+	const node = {
+		id: "status-nonstring-message-node",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	const setStatusSpy = test.mock.method(childSpan, "setStatus");
+
+	endSpan(mockRed, msg, "generic error", node);
+
+	const errorStatusCall = setStatusSpy.mock.calls.find(
+		(call) => call.arguments?.[0]?.code === 2,
+	);
+	assert.ok(errorStatusCall);
+	assert.match(String(errorStatusCall.arguments[0].message), /"reason":"bad payload"/);
+});
+
 test("endSpan should continue cleanup when child span end throws", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),

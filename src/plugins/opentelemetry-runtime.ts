@@ -1400,10 +1400,7 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	try {
 		const existingCarriers = listPropagationCarriers(msg);
 		const ensureHeadersCarrier = (): TextMapCarrier | undefined => {
-			const headersAdapter =
-				PROPAGATION_CARRIER_ADAPTERS[
-					PROPAGATION_CARRIER_ADAPTERS.length - 1
-				];
+			const headersAdapter = PROPAGATION_CARRIER_ADAPTERS.at(-1);
 			if (!headersAdapter?.ensureCarrier || !Object.isExtensible(msg)) {
 				return undefined;
 			}
@@ -1435,9 +1432,7 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 			}
 			if (
 				adapter ===
-					PROPAGATION_CARRIER_ADAPTERS[
-						PROPAGATION_CARRIER_ADAPTERS.length - 1
-					] &&
+					PROPAGATION_CARRIER_ADAPTERS.at(-1) &&
 				!Object.isExtensible(msg)
 			) {
 				continue;
@@ -2176,7 +2171,7 @@ function applyErrorToSpan(
 			exception instanceof Error
 				? exception.message
 				: typeof (exception as { message?: unknown })?.message === "string"
-					? ((exception as { message: string }).message)
+					? (exception as { message: string }).message
 					: stringifyLogBody(exception),
 	});
 	parent.parentSpan.setStatus({ code: SpanStatusCode.ERROR });
