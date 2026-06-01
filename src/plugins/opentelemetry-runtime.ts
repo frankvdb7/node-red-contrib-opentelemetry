@@ -90,13 +90,15 @@ const fakeSpan = {
 function resolveSafeSpanContext(
 	span: Span | undefined,
 ): SpanContext | undefined {
-	if (
-		!span ||
-		typeof (span as Span & { spanContext?: unknown }).spanContext !== "function"
-	) {
+	if (!span) {
 		return;
 	}
 	try {
+		if (
+			typeof (span as Span & { spanContext?: unknown }).spanContext !== "function"
+		) {
+			return;
+		}
 		const spanContext = span.spanContext();
 		return isSpanContextValid(spanContext) ? spanContext : undefined;
 	} catch {
