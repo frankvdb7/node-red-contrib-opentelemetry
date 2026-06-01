@@ -1406,17 +1406,15 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 		}
 		return existingCarriers;
 	}
-	const createdCarriers: TextMapCarrier[] = [];
+	let createdCarrier: TextMapCarrier | undefined;
 	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
-		const createdCarrier = adapter.ensureCarrier?.(msg);
+		createdCarrier = adapter.ensureCarrier?.(msg);
 		if (createdCarrier) {
-			if (!createdCarriers.includes(createdCarrier)) {
-				createdCarriers.push(createdCarrier);
-			}
 			break;
 		}
 	}
-	if (createdCarriers.length > 0) {
+	if (createdCarrier) {
+		const createdCarriers: TextMapCarrier[] = [createdCarrier];
 		const headersCarrier = ensureHeadersCarrier();
 		if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
 			createdCarriers.push(headersCarrier);
