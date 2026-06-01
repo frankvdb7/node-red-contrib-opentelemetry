@@ -1571,7 +1571,7 @@ function getFlowOrSubflowName(RED: RuntimeApi, flowId: string): string | undefin
 	if (flowEntry) {
 		return flowEntry.label ?? flowEntry.name;
 	}
-	const flow = RED.nodes.getNode(flowId) as RuntimeRedNodeInstance | undefined;
+	const flow = RED.nodes?.getNode?.(flowId) as RuntimeRedNodeInstance | undefined;
 	return flow?.name;
 }
 
@@ -1599,7 +1599,10 @@ function getSubflowIdFromType(nodeType: string): string | undefined {
 	return nodeType.slice("subflow:".length) || undefined;
 }
 
-function getSubflowEntryById(RED: RuntimeApi, subflowId: string) {
+function getSubflowEntryById(RED: RuntimeApi, subflowId: string | undefined) {
+	if (!RED?.nodes || !subflowId) {
+		return undefined;
+	}
 	const flowConfig = RED.nodes.getFlows?.();
 	return flowConfig?.flows?.find(
 		(entry) => entry.type === "subflow" && entry.id === subflowId,
@@ -1607,7 +1610,7 @@ function getSubflowEntryById(RED: RuntimeApi, subflowId: string) {
 }
 
 function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
-	const subflowEntry = getSubflowEntryById(RED, nodeDefinition.z);
+	const subflowEntry = getSubflowEntryById(RED, nodeDefinition?.z);
 	if (subflowEntry) {
 		return {
 			id: subflowEntry.id,
@@ -1633,7 +1636,7 @@ function getResolvedNodeName(
 	RED: RuntimeApi,
 	nodeDefinition: RuntimeNodeDef,
 ): string | undefined {
-	const runtimeNode = RED.nodes.getNode(
+	const runtimeNode = RED.nodes?.getNode?.(
 		nodeDefinition.id,
 	) as RuntimeRedNodeInstance | undefined;
 	if (isSubflowNodeType(nodeDefinition.type)) {
@@ -2031,7 +2034,7 @@ function createSpan(
 		}
 
 				const nodeName = getResolvedNodeName(RED, nodeDefinition);
-				const runtimeNode = RED.nodes.getNode(
+				const runtimeNode = RED.nodes?.getNode?.(
 					nodeDefinition.id,
 				) as RuntimeRedNodeInstance | undefined;
 				const spanName =
@@ -2392,7 +2395,7 @@ function endSpan(
 			return;
 		}
 			const { parent, span } = spanContext;
-			const runtimeNode = RED.nodes.getNode(
+			const runtimeNode = RED.nodes?.getNode?.(
 				nodeDefinition.id,
 			) as RuntimeRedNodeInstance | undefined;
 			const flowName =
