@@ -63,6 +63,10 @@ const {
 	hasHttpResponseContext,
 	shouldHandleTerminalHttpResponse,
 	isSubflowNodeType,
+	getSubflowIdFromType,
+	getSubflowEntryById,
+	getContainingSubflow,
+	getFlowOrSubflowName,
 	maskUrlCredentials,
 	formatStartupConfigSummary,
 	pluginLog,
@@ -4463,3 +4467,122 @@ test("isSubflowNodeType identifies subflow prefixed node types", () => {
 	assert.equal(isSubflowNodeType("function"), false);
 });
 
+test("getSubflowIdFromType extracts ID from subflow type", () => {
+	assert.equal(getSubflowIdFromType("subflow:abc123"), "abc123");
+	assert.equal(getSubflowIdFromType("function"), undefined);
+});
+
+test("getSubflowEntryById and getContainingSubflow resolve subflow from flows config", () => {
+	const red = {
+		nodes: {
+			getFlows: () => ({
+				flows: [
+					{ id: "s1", type: "subflow", name: "Subflow One" },
+					{ id: "f1", type: "tab", label: "Flow One" },
+				],
+			}),
+		},
+	};
+	const entry = getSubflowEntryById(red, "s1");
+	assert.ok(entry);
+	assert.equal(entry.name, "Subflow One");
+
+	const containing = getContainingSubflow(red, { z: "s1" });
+	assert.ok(containing);
+	assert.equal(containing.id, "s1");
+	assert.equal(containing.name, "Subflow One");
+
+	const notSubflow = getContainingSubflow(red, { z: "f1" });
+	assert.equal(notSubflow, undefined);
+});
+
+test("createSpan adds subflow attributes for node inside subflow", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [
+					{ id: "subflow1", type: "subflow", name: "My Subflow" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "m1" };
+	const node = { id: "n1", type: "function", z: "subflow1" };
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], "subflow1");
+	assert.equal(span.attributes["node_red.subflow.name"], "My Subflow");
+	// Should still have flow attributes (z)
+	assert.equal(span.attributes["node_red.flow.id"], "subflow1");
+});
+
+test("createSpan adds subflow attributes for subflow instance node", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [
+					{ id: "subflow_template", type: "subflow", name: "Template Name" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "m2" };
+	const node = { id: "n2", type: "subflow:subflow_template", z: "flow1" };
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], "subflow_template");
+	assert.equal(span.attributes["node_red.subflow.name"], "Template Name");
+	assert.equal(span.attributes["node_red.flow.id"], "flow1");
+});
+
+test("createSpan does not add subflow attributes for normal flow node", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [
+					{ id: "flow1", type: "tab", label: "Main Flow" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "m3" };
+	const node = { id: "n3", type: "function", z: "flow1" };
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], undefined);
+	assert.equal(span.attributes["node_red.subflow.name"], undefined);
+	assert.equal(span.attributes["node_red.flow.id"], "flow1");
+});
+
+test("getFlowOrSubflowName maintains compatibility for normal flows and subflows", () => {
+	const red = {
+		nodes: {
+			getFlows: () => ({
+				flows: [
+					{ id: "f1", type: "tab", label: "Flow Label" },
+					{ id: "s1", type: "subflow", name: "Subflow Name" },
+				],
+			}),
+			getNode: (id) => (id === "f2" ? { name: "Node Name" } : undefined),
+		},
+	};
+	assert.equal(getFlowOrSubflowName(red, "f1"), "Flow Label");
+	assert.equal(getFlowOrSubflowName(red, "s1"), "Subflow Name");
+	assert.equal(getFlowOrSubflowName(red, "f2"), "Node Name");
+	assert.equal(getFlowOrSubflowName(red, "unknown"), undefined);
+});
