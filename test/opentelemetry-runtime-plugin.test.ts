@@ -67,6 +67,7 @@ const {
 	formatStartupConfigSummary,
 	pluginLog,
 	resolveExtractionCarrier,
+	resolvePropagationCarriers,
 	setTraceContextHeaderAliases,
 	getSharedState,
 } = otelModule.__test__;
@@ -1156,6 +1157,19 @@ test("carrier resolver prefers explicit transport carriers over req.headers with
 		},
 	};
 	assert.equal(resolveExtractionCarrier(msg), msg.userProperties);
+});
+
+test("resolvePropagationCarriers tolerates nullish or invalid message inputs", () => {
+	assert.doesNotThrow(() => resolvePropagationCarriers(null as any));
+	assert.doesNotThrow(() => resolvePropagationCarriers(undefined as any));
+	assert.doesNotThrow(() => resolvePropagationCarriers("invalid" as any));
+
+	const carriersFromNull = resolvePropagationCarriers(null as any);
+	const carriersFromUndefined = resolvePropagationCarriers(undefined as any);
+	assert.equal(Array.isArray(carriersFromNull), true);
+	assert.equal(Array.isArray(carriersFromUndefined), true);
+	assert.equal(typeof carriersFromNull[0], "object");
+	assert.equal(typeof carriersFromUndefined[0], "object");
 });
 
 test("endSpan should handle http request and response correctly", () => {

@@ -1391,6 +1391,9 @@ function resolvePropagationCarrier(msg: RuntimeMessage): TextMapCarrier {
 }
 
 function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
+	if (!isTextMapCarrier(msg)) {
+		return [{}];
+	}
 	const existingCarriers = listPropagationCarriers(msg);
 	const ensureHeadersCarrier = (): TextMapCarrier | undefined =>
 		PROPAGATION_CARRIER_ADAPTERS[
