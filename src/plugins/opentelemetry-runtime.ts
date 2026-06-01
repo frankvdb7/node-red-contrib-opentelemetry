@@ -1379,6 +1379,9 @@ function listPropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
 		const carrier = adapter.getCarrier(msg);
 		if (carrier) {
+			if (!Object.isExtensible(carrier)) {
+				continue;
+			}
 			carriers.push(carrier);
 		}
 	}
@@ -1400,13 +1403,17 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 			PROPAGATION_CARRIER_ADAPTERS[
 				PROPAGATION_CARRIER_ADAPTERS.length - 1
 			]?.ensureCarrier?.(msg);
-		if (existingCarriers.length > 0) {
-			const headersCarrier = ensureHeadersCarrier();
-			if (headersCarrier && !existingCarriers.includes(headersCarrier)) {
-				existingCarriers.push(headersCarrier);
-			}
-			return existingCarriers;
+	if (existingCarriers.length > 0) {
+		const headersCarrier = ensureHeadersCarrier();
+		if (
+			headersCarrier &&
+			Object.isExtensible(headersCarrier) &&
+			!existingCarriers.includes(headersCarrier)
+		) {
+			existingCarriers.push(headersCarrier);
 		}
+		return existingCarriers;
+	}
 		let createdCarrier: TextMapCarrier | undefined;
 		for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
 			createdCarrier = adapter.ensureCarrier?.(msg);
@@ -1414,17 +1421,27 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 				break;
 			}
 		}
-		if (!createdCarrier) {
-			// Absolute fallback for malformed message shapes.
-			msg.headers = {};
-			return [msg.headers as TextMapCarrier];
-		}
-		const createdCarriers: TextMapCarrier[] = [createdCarrier];
-		const headersCarrier = ensureHeadersCarrier();
-		if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
-			createdCarriers.push(headersCarrier);
-		}
-		return createdCarriers;
+	if (!createdCarrier) {
+		// Absolute fallback for malformed message shapes.
+		msg.headers = {};
+		return [msg.headers as TextMapCarrier];
+	}
+	const createdCarriers: TextMapCarrier[] = Object.isExtensible(createdCarrier)
+		? [createdCarrier]
+		: [];
+	const headersCarrier = ensureHeadersCarrier();
+	if (
+		headersCarrier &&
+		Object.isExtensible(headersCarrier) &&
+		!createdCarriers.includes(headersCarrier)
+	) {
+		createdCarriers.push(headersCarrier);
+	}
+	if (createdCarriers.length === 0) {
+		msg.headers = {};
+		return [msg.headers as TextMapCarrier];
+	}
+	return createdCarriers;
 	} catch (error) {
 		pluginLog(
 			"warn",

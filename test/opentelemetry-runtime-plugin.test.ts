@@ -2579,6 +2579,43 @@ test("preDeliver.otel hook clears propagation fields case-insensitively", async 
 	await runtimePlugin.onClose();
 });
 
+test("preDeliver.otel hook skips frozen carriers without throwing", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "function",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const frozenHeaders = Object.freeze({
+		traceparent:
+			"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+		existing: "keep",
+	});
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: { headers: frozenHeaders },
+	};
+	assert.doesNotThrow(() => preDeliverListener(sendEvent));
+	assert.equal(sendEvent.msg.headers, frozenHeaders);
+	assert.equal(sendEvent.msg.headers.traceparent, frozenHeaders.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
 test("postDeliver.otel does not inject when destination node type is not allowed", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
@@ -2739,6 +2776,119 @@ test("postDeliver.otel hook handles Object.create(null) headers carrier", async 
 	postDeliverListener(sendEvent);
 	assert.equal(sendEvent.msg.headers.existing, "keep");
 	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook skips frozen carriers and injects into extensible fallback", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const frozenHeaders = Object.freeze({ existing: "keep" });
+	const sendEvent = {
+		msg: {
+			_msgid: "frozen-postdeliver-msg",
+			headers: frozenHeaders,
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.notEqual(sendEvent.msg.headers, frozenHeaders);
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook skips non-extensible userProperties carrier", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "mqtt out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const fixedUserProperties = Object.preventExtensions({ existing: "keep" });
+	const sendEvent = {
+		msg: {
+			_msgid: "nonextensible-userprops-msg",
+			userProperties: fixedUserProperties,
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "mqtt out", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.equal(sendEvent.msg.userProperties, fixedUserProperties);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook skips frozen AMQP headers carrier", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "amqp out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const frozenAmqpHeaders = Object.freeze({ existing: "keep" });
+	const sendEvent = {
+		msg: {
+			_msgid: "frozen-amqp-headers-msg",
+			properties: { headers: frozenAmqpHeaders },
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "amqp out", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.equal(sendEvent.msg.properties.headers, frozenAmqpHeaders);
 
 	await runtimePlugin.onClose();
 });
