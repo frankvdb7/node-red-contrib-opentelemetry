@@ -2632,13 +2632,19 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 				normalizeNodeType(sendEvent.destination.node.type),
 			)
 		) {
+			const isHttpRequestDestination =
+				normalizeNodeType(sendEvent.destination.node.type) === "http request";
 			const ctx = trace.setSpan(context.active(), span);
-			if (normalizeNodeType(sendEvent.destination.node.type) === "http request") {
+			if (isHttpRequestDestination) {
 				discardUnchangedNodeRedHttpResponseHeaders(sendEvent.msg);
 			}
 			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
 				clearPropagationFields(carrier);
 				propagator.inject(ctx, carrier, defaultTextMapSetter);
+				if (isHttpRequestDestination) {
+					removeCarrierFieldIgnoringCase(carrier, "tracestate");
+					removeCarrierFieldIgnoringCase(carrier, "baggage");
+				}
 				mirrorTraceContextAliases(carrier);
 			});
 		}

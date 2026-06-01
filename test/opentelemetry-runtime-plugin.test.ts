@@ -2250,6 +2250,53 @@ test("postDeliver.otel hook falls back to msg.headers injection", async () => {
 	await runtimePlugin.onClose();
 });
 
+test("postDeliver.otel hook removes stale http propagation headers before injection", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "http-header-cleanup-msg",
+			headers: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "old=state",
+				baggage: "old=value",
+				authorization: "Bearer token",
+			},
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+
+	postDeliverListener(sendEvent);
+
+	assert.notEqual(
+		sendEvent.msg.headers.traceparent,
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+	);
+	assert.equal(sendEvent.msg.headers.tracestate, undefined);
+	assert.equal(sendEvent.msg.headers.baggage, undefined);
+	assert.equal(sendEvent.msg.headers.authorization, "Bearer token");
+
+	await runtimePlugin.onClose();
+});
+
 test("postDeliver.otel fallback should create msg.headers when missing", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
