@@ -1210,6 +1210,50 @@ test("resolvePropagationCarriers preserves extensible existing headers when msg 
 	assert.equal(carriers.length >= 1, true);
 });
 
+test("resolvePropagationCarriers does not emit warning logs for frozen msg with extensible carrier", () => {
+	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	const sharedState = getSharedState();
+	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
+	const amqpHeaders = { existing: "keep" };
+	const frozenMsg = Object.freeze({
+		_msgid: "frozen-no-warn-msg",
+		properties: { headers: amqpHeaders },
+	});
+
+	const carriers = resolvePropagationCarriers(frozenMsg as any);
+
+	assert.equal(carriers.includes(amqpHeaders), true);
+	assert.equal(
+		logSpy.mock.calls.some((call) =>
+			String(call.arguments?.[0]?.msg || "").includes(
+				"Failed to resolve propagation carriers",
+			),
+		),
+		false,
+	);
+});
+
+test("resolvePropagationCarriers does not emit warning logs for non-extensible msg fallback", () => {
+	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	const sharedState = getSharedState();
+	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
+	const msg = { _msgid: "nonextensible-no-warn-msg" };
+	Object.preventExtensions(msg);
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(typeof carriers[0], "object");
+	assert.equal(
+		logSpy.mock.calls.some((call) =>
+			String(call.arguments?.[0]?.msg || "").includes(
+				"Failed to resolve propagation carriers",
+			),
+		),
+		false,
+	);
+});
+
 test("endSpan should handle http request and response correctly", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),

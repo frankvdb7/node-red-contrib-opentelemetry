@@ -1399,15 +1399,18 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	}
 	try {
 		const existingCarriers = listPropagationCarriers(msg);
-		const ensureHeadersCarrier = (): TextMapCarrier | undefined =>
-			PROPAGATION_CARRIER_ADAPTERS[
-				PROPAGATION_CARRIER_ADAPTERS.length - 1
-			]?.ensureCarrier?.(msg);
+		const ensureHeadersCarrier = (): TextMapCarrier | undefined => {
+			const headersAdapter =
+				PROPAGATION_CARRIER_ADAPTERS[
+					PROPAGATION_CARRIER_ADAPTERS.length - 1
+				];
+			if (!headersAdapter?.ensureCarrier || !Object.isExtensible(msg)) {
+				return undefined;
+			}
+			return headersAdapter.ensureCarrier(msg);
+		};
 		if (existingCarriers.length > 0) {
-			const canCreateHeadersCarrier = Object.isExtensible(msg);
-			const headersCarrier = canCreateHeadersCarrier
-				? ensureHeadersCarrier()
-				: undefined;
+			const headersCarrier = ensureHeadersCarrier();
 			if (
 				headersCarrier &&
 				Object.isExtensible(headersCarrier) &&
@@ -1419,7 +1422,20 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 		}
 		let createdCarrier: TextMapCarrier | undefined;
 		for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
-			createdCarrier = adapter.ensureCarrier?.(msg);
+			if (!adapter.ensureCarrier) {
+				continue;
+			}
+			// Only call ensureCarrier when the mutation target can be extended.
+			// This avoids expected TypeErrors for frozen/non-extensible messages.
+			const requiresExtensibleMsg =
+				adapter === PROPAGATION_CARRIER_ADAPTERS[0] ||
+				adapter === PROPAGATION_CARRIER_ADAPTERS[
+					PROPAGATION_CARRIER_ADAPTERS.length - 1
+				];
+			if (requiresExtensibleMsg && !Object.isExtensible(msg)) {
+				continue;
+			}
+			createdCarrier = adapter.ensureCarrier(msg);
 			if (createdCarrier) {
 				break;
 			}
@@ -1435,10 +1451,7 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 		const createdCarriers: TextMapCarrier[] = Object.isExtensible(createdCarrier)
 			? [createdCarrier]
 			: [];
-		const canCreateHeadersCarrier = Object.isExtensible(msg);
-		const headersCarrier = canCreateHeadersCarrier
-			? ensureHeadersCarrier()
-			: undefined;
+		const headersCarrier = ensureHeadersCarrier();
 		if (
 			headersCarrier &&
 			Object.isExtensible(headersCarrier) &&
