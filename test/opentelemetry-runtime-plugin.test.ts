@@ -1182,6 +1182,34 @@ test("resolvePropagationCarriers handles frozen message mutation failures safely
 	assert.equal(typeof carriers[0], "object");
 });
 
+test("resolvePropagationCarriers preserves extensible existing carriers when msg is frozen", () => {
+	const amqpHeaders = { existing: "keep" };
+	const frozenMsg = Object.freeze({
+		_msgid: "frozen-with-carrier-msg",
+		properties: { headers: amqpHeaders },
+	});
+
+	const carriers = resolvePropagationCarriers(frozenMsg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(carriers.includes(amqpHeaders), true);
+});
+
+test("resolvePropagationCarriers preserves extensible existing headers when msg is non-extensible", () => {
+	const headers = { existing: "keep" };
+	const msg = {
+		_msgid: "nonextensible-msg",
+		headers,
+	};
+	Object.preventExtensions(msg);
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(carriers.includes(headers), true);
+	assert.equal(carriers.length >= 1, true);
+});
+
 test("endSpan should handle http request and response correctly", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
