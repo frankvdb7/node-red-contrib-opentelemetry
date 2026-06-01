@@ -1413,17 +1413,17 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 			break;
 		}
 	}
-	if (createdCarrier) {
-		const createdCarriers: TextMapCarrier[] = [createdCarrier];
-		const headersCarrier = ensureHeadersCarrier();
-		if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
-			createdCarriers.push(headersCarrier);
-		}
-		return createdCarriers;
+	if (!createdCarrier) {
+		// Absolute fallback for malformed message shapes.
+		msg.headers = {};
+		return [msg.headers as TextMapCarrier];
 	}
-	// Absolute fallback for malformed message shapes.
-	msg.headers = {};
-	return [msg.headers as TextMapCarrier];
+	const createdCarriers: TextMapCarrier[] = [createdCarrier];
+	const headersCarrier = ensureHeadersCarrier();
+	if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
+		createdCarriers.push(headersCarrier);
+	}
+	return createdCarriers;
 }
 
 function clearPropagationFields(carrier: TextMapCarrier): void {
@@ -2185,8 +2185,8 @@ function hasActiveNonOrphanChildSpan(
 			_creationTimestamp?: number;
 		};
 		const childNodeType =
-			typeof childSpanExt.attributes?.["node_red.node.type"] === "string"
-				? (childSpanExt.attributes["node_red.node.type"] as string)
+			typeof childSpanExt.attributes?.[ATTR_NODE_TYPE] === "string"
+				? (childSpanExt.attributes[ATTR_NODE_TYPE] as string)
 				: undefined;
 		// Keep parent active when child span metadata is missing/unknown.
 		// This avoids cleanup crashes and prevents prematurely ending the parent span.
