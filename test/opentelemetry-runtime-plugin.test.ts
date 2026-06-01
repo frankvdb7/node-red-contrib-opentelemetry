@@ -67,8 +67,10 @@ const {
 	formatStartupConfigSummary,
 	pluginLog,
 	resolveExtractionCarrier,
+	resolvePropagationCarriers,
 	setTraceContextHeaderAliases,
 	getSharedState,
+	clearPropagationFields,
 } = otelModule.__test__;
 
 const originalEnv = { ...process.env };
@@ -687,6 +689,31 @@ test("deleteOutdatedMsgSpans removes outdated entries", () => {
 	assert.ok(parentSpan.endTimestamp <= now - 100);
 });
 
+test("deleteOutdatedMsgSpans continues when one parent span end throws", () => {
+	const spans = getMsgSpans();
+	const now = Date.now();
+	const brokenParent = createFakeSpan("broken-parent");
+	const healthyParent = createFakeSpan("healthy-parent");
+	brokenParent.end = () => {
+		throw new Error("parent end failed");
+	};
+	spans.set("broken-msg", {
+		parentSpan: brokenParent,
+		spans: new Map(),
+		updateTimestamp: now - 200,
+	});
+	spans.set("healthy-msg", {
+		parentSpan: healthyParent,
+		spans: new Map(),
+		updateTimestamp: now - 200,
+	});
+	setTimeoutMs(0);
+
+	deleteOutdatedMsgSpans();
+
+	assert.equal(spans.has("healthy-msg"), false);
+});
+
 test("logEvent forwards diagnostic debug logs to Node-RED even when plugin log level is off", () => {
 	setLogLevel("off");
 	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
@@ -1133,6 +1160,140 @@ test("carrier resolver prefers explicit transport carriers over req.headers with
 	assert.equal(resolveExtractionCarrier(msg), msg.userProperties);
 });
 
+test("resolvePropagationCarriers tolerates nullish or invalid message inputs", () => {
+	assert.doesNotThrow(() => resolvePropagationCarriers(null as any));
+	assert.doesNotThrow(() => resolvePropagationCarriers(undefined as any));
+	assert.doesNotThrow(() => resolvePropagationCarriers("invalid" as any));
+
+	const carriersFromNull = resolvePropagationCarriers(null as any);
+	const carriersFromUndefined = resolvePropagationCarriers(undefined as any);
+	assert.equal(Array.isArray(carriersFromNull), true);
+	assert.equal(Array.isArray(carriersFromUndefined), true);
+	assert.equal(typeof carriersFromNull[0], "object");
+	assert.equal(typeof carriersFromUndefined[0], "object");
+});
+
+test("resolvePropagationCarriers handles frozen message mutation failures safely", () => {
+	const frozenMsg = Object.freeze({
+		_msgid: "frozen-msg",
+	});
+	assert.doesNotThrow(() => resolvePropagationCarriers(frozenMsg as any));
+	const carriers = resolvePropagationCarriers(frozenMsg as any);
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(typeof carriers[0], "object");
+});
+
+test("resolvePropagationCarriers preserves extensible existing carriers when msg is frozen", () => {
+	const amqpHeaders = { existing: "keep" };
+	const frozenMsg = Object.freeze({
+		_msgid: "frozen-with-carrier-msg",
+		properties: { headers: amqpHeaders },
+	});
+
+	const carriers = resolvePropagationCarriers(frozenMsg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(carriers.includes(amqpHeaders), true);
+});
+
+test("resolvePropagationCarriers creates AMQP carrier when msg is frozen but msg.properties is extensible", () => {
+	const msg = {
+		_msgid: "frozen-msg-extensible-properties",
+		properties: {},
+	};
+	Object.freeze(msg);
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.ok(msg.properties.headers);
+	assert.equal(carriers.includes(msg.properties.headers), true);
+	assert.equal(typeof msg.properties.headers, "object");
+});
+
+test("resolvePropagationCarriers preserves extensible existing headers when msg is non-extensible", () => {
+	const headers = { existing: "keep" };
+	const msg = {
+		_msgid: "nonextensible-msg",
+		headers,
+	};
+	Object.preventExtensions(msg);
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(carriers.includes(headers), true);
+	assert.equal(carriers.length >= 1, true);
+});
+
+test("resolvePropagationCarriers does not emit warning logs for frozen msg with extensible carrier", () => {
+	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	const sharedState = getSharedState();
+	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
+	const amqpHeaders = { existing: "keep" };
+	const frozenMsg = Object.freeze({
+		_msgid: "frozen-no-warn-msg",
+		properties: { headers: amqpHeaders },
+	});
+
+	const carriers = resolvePropagationCarriers(frozenMsg as any);
+
+	assert.equal(carriers.includes(amqpHeaders), true);
+	assert.equal(
+		logSpy.mock.calls.some((call) =>
+			String(call.arguments?.[0]?.msg || "").includes(
+				"Failed to resolve propagation carriers",
+			),
+		),
+		false,
+	);
+});
+
+test("resolvePropagationCarriers does not emit warning logs for non-extensible msg fallback", () => {
+	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	const sharedState = getSharedState();
+	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
+	const msg = { _msgid: "nonextensible-no-warn-msg" };
+	Object.preventExtensions(msg);
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(typeof carriers[0], "object");
+	assert.equal(
+		logSpy.mock.calls.some((call) =>
+			String(call.arguments?.[0]?.msg || "").includes(
+				"Failed to resolve propagation carriers",
+			),
+		),
+		false,
+	);
+});
+
+test("resolvePropagationCarriers fallback preserves existing headers when recreating extensible carrier", () => {
+	const headers = Object.freeze({
+		authorization: "Bearer token",
+		"content-type": "application/json",
+		"x-custom": "value",
+	});
+	const msg = {
+		_msgid: "preserve-headers-msg",
+		headers,
+	};
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.equal(
+		typeof msg.headers === "object" && msg.headers !== null && !Array.isArray(msg.headers),
+		true,
+	);
+	assert.notEqual(msg.headers, headers);
+	assert.equal(msg.headers.authorization, "Bearer token");
+	assert.equal(msg.headers["content-type"], "application/json");
+	assert.equal(msg.headers["x-custom"], "value");
+});
+
 test("endSpan should handle http request and response correctly", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
@@ -1253,6 +1414,111 @@ test("endSpan should stringify non-Error exception objects", () => {
 	endSpan(mockRed, msg, { code: 500 }, node);
 	assert.equal(recordExceptionSpy.mock.calls.length, 1);
 	assert.equal(typeof recordExceptionSpy.mock.calls[0].arguments[0], "string");
+	assert.match(
+		String(recordExceptionSpy.mock.calls[0].arguments[0]),
+		/"reason":"bad payload"/,
+	);
+});
+
+test("endSpan should use msg.error for span status message when available", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "status-msg-error", error: { reason: "bad payload" } };
+	const node = {
+		id: "status-msg-node",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	const setStatusSpy = test.mock.method(childSpan, "setStatus");
+
+	endSpan(mockRed, msg, "generic error", node);
+
+	assert.equal(setStatusSpy.mock.calls.length > 0, true);
+	const errorStatusCall = setStatusSpy.mock.calls.find(
+		(call) => call.arguments?.[0]?.code === 2,
+	);
+	assert.ok(errorStatusCall);
+	assert.match(String(errorStatusCall.arguments[0].message), /"reason":"bad payload"/);
+});
+
+test("endSpan should prefer non-Error exception.message for span status message", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = {
+		_msgid: "status-custom-message",
+		error: { message: "custom object message", reason: "bad payload" },
+	};
+	const node = {
+		id: "status-custom-message-node",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	const setStatusSpy = test.mock.method(childSpan, "setStatus");
+
+	endSpan(mockRed, msg, "generic error", node);
+
+	const errorStatusCall = setStatusSpy.mock.calls.find(
+		(call) => call.arguments?.[0]?.code === 2,
+	);
+	assert.ok(errorStatusCall);
+	assert.equal(errorStatusCall.arguments[0].message, "custom object message");
+});
+
+test("endSpan should stringify non-Error exception when message is not a string", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = {
+		_msgid: "status-nonstring-message",
+		error: { message: { nested: "value" }, reason: "bad payload" },
+	};
+	const node = {
+		id: "status-nonstring-message-node",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	const setStatusSpy = test.mock.method(childSpan, "setStatus");
+
+	endSpan(mockRed, msg, "generic error", node);
+
+	const errorStatusCall = setStatusSpy.mock.calls.find(
+		(call) => call.arguments?.[0]?.code === 2,
+	);
+	assert.ok(errorStatusCall);
+	assert.match(String(errorStatusCall.arguments[0].message), /"reason":"bad payload"/);
+});
+
+test("endSpan should continue cleanup when child span end throws", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "end-throw-msg" };
+	const node = {
+		id: "node-end-throw",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	childSpan.end = () => {
+		throw new Error("child end failed");
+	};
+
+	endSpan(mockRed, msg, null, node);
+
+	assert.equal(getMsgSpans().has("end-throw-msg"), false);
 });
 
 test("createSpan should handle websocket nodes correctly", () => {
@@ -1985,6 +2251,105 @@ test("postDeliver.otel hook falls back to msg.headers injection", async () => {
 	await runtimePlugin.onClose();
 });
 
+test("postDeliver.otel hook removes stale http propagation headers before injection", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "http-header-cleanup-msg",
+			headers: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "old=state",
+				baggage: "old=value",
+				authorization: "Bearer token",
+			},
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+
+	postDeliverListener(sendEvent);
+
+	assert.notEqual(
+		sendEvent.msg.headers.traceparent,
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+	);
+	assert.equal(sendEvent.msg.headers.authorization, "Bearer token");
+
+	await runtimePlugin.onClose();
+});
+
+test("clearPropagationFields removes W3C propagation fields case-insensitively", () => {
+	const carrier = {
+		traceparent: "old-traceparent",
+		TraceState: "old=state",
+		Baggage: "old=value",
+		authorization: "Bearer token",
+	};
+
+	clearPropagationFields(carrier);
+
+	assert.equal(carrier.traceparent, undefined);
+	assert.equal(carrier.TraceState, undefined);
+	assert.equal(carrier.Baggage, undefined);
+	assert.equal(carrier.authorization, "Bearer token");
+});
+
+test("postDeliver.otel fallback should create msg.headers when missing", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "headers-fallback-create-msg",
+			headers: null,
+			userProperties: null,
+			properties: { headers: null },
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.equal(typeof sendEvent.msg.headers, "object");
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
 test("postDeliver.otel hook does not turn unchanged Node-RED response headers into http request headers", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
@@ -2441,6 +2806,43 @@ test("preDeliver.otel hook clears propagation fields case-insensitively", async 
 	await runtimePlugin.onClose();
 });
 
+test("preDeliver.otel hook skips frozen carriers without throwing", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "function",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const preDeliverListener = mockRed.hooks.listeners["preDeliver.otel"];
+	assert.ok(preDeliverListener);
+
+	const frozenHeaders = Object.freeze({
+		traceparent:
+			"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+		existing: "keep",
+	});
+	const sendEvent = {
+		source: { node: { type: "function" } },
+		msg: { headers: frozenHeaders },
+	};
+	assert.doesNotThrow(() => preDeliverListener(sendEvent));
+	assert.equal(sendEvent.msg.headers, frozenHeaders);
+	assert.equal(sendEvent.msg.headers.traceparent, frozenHeaders.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
 test("postDeliver.otel does not inject when destination node type is not allowed", async () => {
 	const { runtimePlugin, mockRed } = createPluginHarness(true);
 	assert.ok(runtimePlugin);
@@ -2601,6 +3003,119 @@ test("postDeliver.otel hook handles Object.create(null) headers carrier", async 
 	postDeliverListener(sendEvent);
 	assert.equal(sendEvent.msg.headers.existing, "keep");
 	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook skips frozen carriers and injects into extensible fallback", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const frozenHeaders = Object.freeze({ existing: "keep" });
+	const sendEvent = {
+		msg: {
+			_msgid: "frozen-postdeliver-msg",
+			headers: frozenHeaders,
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.notEqual(sendEvent.msg.headers, frozenHeaders);
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook skips non-extensible userProperties carrier", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "mqtt out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const fixedUserProperties = Object.preventExtensions({ existing: "keep" });
+	const sendEvent = {
+		msg: {
+			_msgid: "nonextensible-userprops-msg",
+			userProperties: fixedUserProperties,
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "mqtt out", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.equal(sendEvent.msg.userProperties, fixedUserProperties);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel hook skips frozen AMQP headers carrier", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "amqp out",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const frozenAmqpHeaders = Object.freeze({ existing: "keep" });
+	const sendEvent = {
+		msg: {
+			_msgid: "frozen-amqp-headers-msg",
+			properties: { headers: frozenAmqpHeaders },
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "amqp out", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+	assert.equal(sendEvent.msg.properties.headers, frozenAmqpHeaders);
 
 	await runtimePlugin.onClose();
 });
@@ -3417,6 +3932,37 @@ test("endSpan should handle orphan spans from switch nodes", () => {
 	assert.equal(getMsgSpans().size, 0);
 });
 
+test("endSpan orphan cleanup should continue when parent end throws", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "orphan-parent-end-throws" };
+	const switchNode = {
+		id: "switch-node-throws",
+		type: "switch",
+		name: "Switch",
+		z: "flow",
+	};
+	const functionNode = {
+		id: "function-node-throws",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+
+	createSpan(mockRed, tracer, msg, switchNode, {}, false);
+	createSpan(mockRed, tracer, msg, functionNode, {}, false);
+	const parent = getMsgSpans().get("orphan-parent-end-throws");
+	assert.ok(parent);
+	parent.parentSpan.end = () => {
+		throw new Error("parent end failed in orphan cleanup");
+	};
+
+	endSpan(mockRed, msg, null, functionNode);
+
+	assert.equal(getMsgSpans().has("orphan-parent-end-throws"), false);
+});
+
 test("endSpan keeps parent active when remaining child span is non-orphan", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
@@ -3442,6 +3988,59 @@ test("endSpan keeps parent active when remaining child span is non-orphan", () =
 	const parent = getMsgSpans().get("active-child-msg");
 	assert.ok(parent);
 	assert.equal(parent.spans.has("active-child-msg#function-node-b"), true);
+});
+
+test("endSpan should not fail when remaining child span has missing attributes", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "missing-attrs-msg" };
+	const functionNodeA = {
+		id: "function-node-a",
+		type: "function",
+		name: "Function A",
+		z: "flow",
+	};
+	const functionNodeB = {
+		id: "function-node-b",
+		type: "function",
+		name: "Function B",
+		z: "flow",
+	};
+	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	getSharedState().nodeRedLogApi = nodeRedUtilStub.log;
+
+	createSpan(mockRed, tracer, msg, functionNodeA, {}, false);
+	createSpan(mockRed, tracer, msg, functionNodeB, {}, false);
+
+	const parentBeforeEnd = getMsgSpans().get("missing-attrs-msg");
+	assert.ok(parentBeforeEnd);
+	parentBeforeEnd.spans.set("missing-attrs-msg#function-node-b", {
+		name: "broken-child-span",
+		ended: false,
+		end() {
+			this.ended = true;
+		},
+		setAttributes() {},
+		setAttribute() {},
+		setStatus() {},
+		recordException() {},
+		updateName() {},
+	});
+
+	endSpan(mockRed, msg, null, functionNodeA);
+
+	const parentAfterEnd = getMsgSpans().get("missing-attrs-msg");
+	assert.ok(parentAfterEnd);
+	assert.equal(parentAfterEnd.spans.has("missing-attrs-msg#function-node-b"), true);
+	assert.equal(
+		logSpy.mock.calls.some((call) =>
+			String(call.arguments?.[0]?.msg || "").includes(
+				"An error occurred during span ending",
+			),
+		),
+		false,
+	);
 });
 
 test("pluginLog should use Node-RED log API when available", () => {

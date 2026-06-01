@@ -1293,10 +1293,14 @@ function removeCarrierFieldIgnoringCase(
 	carrier: TextMapCarrier,
 	fieldName: string,
 ): void {
-	const key = getCarrierFieldNameIgnoringCase(carrier, fieldName);
-	if (key !== undefined) {
-		delete carrier[key];
+	const normalizedFieldName = fieldName.toLowerCase();
+
+	for (const key of Object.keys(carrier)) {
+		if (key.toLowerCase() === normalizedFieldName) {
+			delete carrier[key];
+		}
 	}
+
 }
 
 function calculateNodeRedHttpRequestHeaderHash(
@@ -1379,6 +1383,9 @@ function listPropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
 		const carrier = adapter.getCarrier(msg);
 		if (carrier) {
+			if (!Object.isExtensible(carrier)) {
+				continue;
+			}
 			carriers.push(carrier);
 		}
 	}
@@ -1391,24 +1398,89 @@ function resolvePropagationCarrier(msg: RuntimeMessage): TextMapCarrier {
 }
 
 function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
-	const existingCarriers = listPropagationCarriers(msg);
-	if (existingCarriers.length > 0) {
-		const headersCarrier = PROPAGATION_CARRIER_ADAPTERS[
-			PROPAGATION_CARRIER_ADAPTERS.length - 1
-		].ensureCarrier?.(msg);
-		if (headersCarrier && !existingCarriers.includes(headersCarrier)) {
-			existingCarriers.push(headersCarrier);
-		}
-		return existingCarriers;
+	if (!isTextMapCarrier(msg)) {
+		return [{}];
 	}
-	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
-		const createdCarrier = adapter.ensureCarrier?.(msg);
-		if (createdCarrier) {
-			return [createdCarrier];
+	try {
+		const existingCarriers = listPropagationCarriers(msg);
+		const ensureHeadersCarrier = (): TextMapCarrier | undefined => {
+			const headersAdapter = PROPAGATION_CARRIER_ADAPTERS.at(-1);
+			if (!headersAdapter?.ensureCarrier || !Object.isExtensible(msg)) {
+				return undefined;
+			}
+			return headersAdapter.ensureCarrier(msg);
+		};
+		if (existingCarriers.length > 0) {
+			const headersCarrier = ensureHeadersCarrier();
+			if (
+				headersCarrier &&
+				Object.isExtensible(headersCarrier) &&
+				!existingCarriers.includes(headersCarrier)
+			) {
+				existingCarriers.push(headersCarrier);
+			}
+			return existingCarriers;
 		}
+		let createdCarrier: TextMapCarrier | undefined;
+		for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
+			if (!adapter.ensureCarrier) {
+				continue;
+			}
+			// Only call ensureCarrier when its specific mutation target can be extended.
+			// This avoids expected TypeErrors for frozen/non-extensible message shapes.
+			if (
+				adapter === PROPAGATION_CARRIER_ADAPTERS[0] &&
+				!Object.isExtensible(msg.properties ?? {})
+			) {
+				continue;
+			}
+			if (
+				adapter ===
+					PROPAGATION_CARRIER_ADAPTERS.at(-1) &&
+				!Object.isExtensible(msg)
+			) {
+				continue;
+			}
+			createdCarrier = adapter.ensureCarrier(msg);
+			if (createdCarrier) {
+				break;
+			}
+		}
+		if (!createdCarrier) {
+			// Absolute fallback for malformed message shapes.
+			if (Object.isExtensible(msg)) {
+				msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
+				return [msg.headers as TextMapCarrier];
+			}
+			return [{}];
+		}
+		const createdCarriers: TextMapCarrier[] = Object.isExtensible(createdCarrier)
+			? [createdCarrier]
+			: [];
+		const headersCarrier = ensureHeadersCarrier();
+		if (
+			headersCarrier &&
+			Object.isExtensible(headersCarrier) &&
+			!createdCarriers.includes(headersCarrier)
+		) {
+			createdCarriers.push(headersCarrier);
+		}
+		if (createdCarriers.length === 0) {
+			if (Object.isExtensible(msg)) {
+				msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
+				return [msg.headers as TextMapCarrier];
+			}
+			return [{}];
+		}
+		return createdCarriers;
+	} catch (error) {
+		pluginLog(
+			"warn",
+			"Failed to resolve propagation carriers for message mutation; using safe fallback.",
+			error,
+		);
+		return [{}];
 	}
-	// Guaranteed by the headers adapter ensureCarrier fallback.
-	return [msg.headers as TextMapCarrier];
 }
 
 function clearPropagationFields(carrier: TextMapCarrier): void {
@@ -1667,11 +1739,15 @@ function deleteOutdatedMsgSpans(): void {
 		for (const [msgId, msgSpan] of msgSpans) {
 			if (msgSpan.updateTimestamp < now - sharedState.timeout) {
 				// ending parent span and remove it
-					pluginLog(
-						"debug",
-						`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
-					);
-				msgSpan.parentSpan.end(msgSpan.updateTimestamp);
+				pluginLog(
+					"debug",
+					`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
+				);
+				try {
+					msgSpan.parentSpan.end(msgSpan.updateTimestamp);
+				} catch (error) {
+					pluginLog("warn", "Failed to end outdated parent span", error);
+				}
 				msgSpans.delete(msgId);
 				completedHttpMetricsMsgIds.delete(msgId);
 				completedHttpResponseMsgIds.delete(msgId);
@@ -2091,11 +2167,16 @@ function applyErrorToSpan(
 	if (exception instanceof Error || typeof exception === "string") {
 		span?.recordException(exception);
 	} else {
-		span?.recordException(String(exception));
+		span?.recordException(stringifyLogBody(exception));
 	}
 	span?.setStatus({
 		code: SpanStatusCode.ERROR,
-		message: error instanceof Error ? error.message : String(error),
+		message:
+			exception instanceof Error
+				? exception.message
+				: typeof (exception as { message?: unknown })?.message === "string"
+					? (exception as { message: string }).message
+					: stringifyLogBody(exception),
 	});
 	parent.parentSpan.setStatus({ code: SpanStatusCode.ERROR });
 	return true;
@@ -2162,13 +2243,20 @@ function hasActiveNonOrphanChildSpan(
 ): boolean {
 	for (const [, childSpan] of parent.spans) {
 		const childSpanExt = childSpan as Span & {
-			attributes: Record<string, unknown>;
+			attributes?: Record<string, unknown>;
 			_creationTimestamp?: number;
 		};
+		const childNodeType =
+			typeof childSpanExt.attributes?.[ATTR_NODE_TYPE] === "string"
+				? (childSpanExt.attributes[ATTR_NODE_TYPE] as string)
+				: undefined;
+		// Keep parent active when child span metadata is missing/unknown.
+		// This avoids cleanup crashes and prevents prematurely ending the parent span.
+		if (!childNodeType) {
+			return true;
+		}
 		if (
-			!ORPHAN_NODE_TYPES.includes(
-				childSpanExt.attributes["node_red.node.type"] as string,
-			) ||
+			!ORPHAN_NODE_TYPES.includes(childNodeType) ||
 			(childSpanExt._creationTimestamp ?? 0) >
 				(currentSpanCreationTimestamp ?? 0)
 		) {
@@ -2194,7 +2282,11 @@ function cleanupOrphanSpansIfNeeded(
 		"debug",
 		`Parent span "${(parent.parentSpan as Span & OTelSpanExtension).name ?? ""}" no longer has child span, ending`,
 	);
-	parent.parentSpan.end();
+	try {
+		parent.parentSpan.end();
+	} catch (error) {
+		pluginLog("warn", "Failed to end parent span during orphan cleanup", error);
+	}
 	msgSpans.delete(msgId);
 	completedHttpMetricsMsgIds.delete(msgId);
 	completedHttpResponseMsgIds.delete(msgId);
@@ -2250,7 +2342,11 @@ function endSpan(
 				nodeDefinition,
 				hasError,
 			);
-		span?.end();
+		try {
+			span?.end();
+		} catch (endError) {
+			pluginLog("warn", "An error occurred while ending child span", endError);
+		}
 		const currentSpanCreationTimestamp = (span as Span & OTelSpanExtension)
 			?._creationTimestamp;
 		pluginLog(
@@ -2540,8 +2636,10 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 				normalizeNodeType(sendEvent.destination.node.type),
 			)
 		) {
+			const isHttpRequestDestination =
+				normalizeNodeType(sendEvent.destination.node.type) === "http request";
 			const ctx = trace.setSpan(context.active(), span);
-			if (normalizeNodeType(sendEvent.destination.node.type) === "http request") {
+			if (isHttpRequestDestination) {
 				discardUnchangedNodeRedHttpResponseHeaders(sendEvent.msg);
 			}
 			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
@@ -2829,6 +2927,7 @@ module.exports.__test__ = {
 	resolvePropagationCarrier,
 	resolvePropagationCarriers,
 	listPropagationCarriers,
+	clearPropagationFields,
 	getMsgSpans: () => msgSpans,
 	clearInterval: () => {
 		if (sharedState.intervalId) {
