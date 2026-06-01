@@ -1626,15 +1626,7 @@ function getSubflowNameFromType(
 		return undefined;
 	}
 	const subflowEntry = getSubflowEntryById(RED, subflowId);
-	if (subflowEntry) {
-		return subflowEntry.name;
-	}
-	// Defensive fallback only if already needed elsewhere (as per requirement)
-	// Keeping some level of fallback to maintain existing behavior if template is not in getFlows
-	const subflowDefinition = RED.nodes.getNode(
-		subflowId,
-	) as RuntimeRedNodeInstance | undefined;
-	return subflowDefinition?.name;
+	return subflowEntry?.label ?? subflowEntry?.name;
 }
 
 function getResolvedNodeName(

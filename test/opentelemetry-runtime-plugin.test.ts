@@ -930,6 +930,11 @@ test("createSpan includes subflow name when subflow node type is used", () => {
 				}
 				return undefined;
 			},
+			getFlows: () => ({
+				flows: [
+					{ id: "subflow-template-id", type: "subflow", name: "My Subflow" },
+				],
+			}),
 		},
 	};
 	const msg = { _msgid: "subflow-msg" };
