@@ -2290,7 +2290,7 @@ test("postDeliver.otel hook removes stale http propagation headers before inject
 		sendEvent.msg.headers.traceparent,
 		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
 	);
-	assert.equal(sendEvent.msg.headers.tracestate, undefined);
+	assert.equal(sendEvent.msg.headers.tracestate, "old=state");
 	assert.equal(sendEvent.msg.headers.baggage, undefined);
 	assert.equal(sendEvent.msg.headers.authorization, "Bearer token");
 

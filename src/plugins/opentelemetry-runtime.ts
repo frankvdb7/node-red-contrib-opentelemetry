@@ -2641,10 +2641,6 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
 				clearPropagationFields(carrier);
 				propagator.inject(ctx, carrier, defaultTextMapSetter);
-				if (isHttpRequestDestination) {
-					removeCarrierFieldIgnoringCase(carrier, "tracestate");
-					removeCarrierFieldIgnoringCase(carrier, "baggage");
-				}
 				mirrorTraceContextAliases(carrier);
 			});
 		}
