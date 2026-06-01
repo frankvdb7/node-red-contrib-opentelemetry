@@ -687,6 +687,31 @@ test("deleteOutdatedMsgSpans removes outdated entries", () => {
 	assert.ok(parentSpan.endTimestamp <= now - 100);
 });
 
+test("deleteOutdatedMsgSpans continues when one parent span end throws", () => {
+	const spans = getMsgSpans();
+	const now = Date.now();
+	const brokenParent = createFakeSpan("broken-parent");
+	const healthyParent = createFakeSpan("healthy-parent");
+	brokenParent.end = () => {
+		throw new Error("parent end failed");
+	};
+	spans.set("broken-msg", {
+		parentSpan: brokenParent,
+		spans: new Map(),
+		updateTimestamp: now - 200,
+	});
+	spans.set("healthy-msg", {
+		parentSpan: healthyParent,
+		spans: new Map(),
+		updateTimestamp: now - 200,
+	});
+	setTimeoutMs(0);
+
+	deleteOutdatedMsgSpans();
+
+	assert.equal(spans.has("healthy-msg"), false);
+});
+
 test("logEvent forwards diagnostic debug logs to Node-RED even when plugin log level is off", () => {
 	setLogLevel("off");
 	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
@@ -1253,6 +1278,32 @@ test("endSpan should stringify non-Error exception objects", () => {
 	endSpan(mockRed, msg, { code: 500 }, node);
 	assert.equal(recordExceptionSpy.mock.calls.length, 1);
 	assert.equal(typeof recordExceptionSpy.mock.calls[0].arguments[0], "string");
+	assert.match(
+		String(recordExceptionSpy.mock.calls[0].arguments[0]),
+		/"reason":"bad payload"/,
+	);
+});
+
+test("endSpan should continue cleanup when child span end throws", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "end-throw-msg" };
+	const node = {
+		id: "node-end-throw",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+	const childSpan = createSpan(mockRed, tracer, msg, node, {}, false);
+	assert.ok(childSpan);
+	childSpan.end = () => {
+		throw new Error("child end failed");
+	};
+
+	endSpan(mockRed, msg, null, node);
+
+	assert.equal(getMsgSpans().has("end-throw-msg"), false);
 });
 
 test("createSpan should handle websocket nodes correctly", () => {
@@ -1980,6 +2031,44 @@ test("postDeliver.otel hook falls back to msg.headers injection", async () => {
 	};
 	postDeliverListener(sendEvent);
 	assert.ok(sendEvent.msg.headers);
+	assert.ok(sendEvent.msg.headers.traceparent);
+
+	await runtimePlugin.onClose();
+});
+
+test("postDeliver.otel fallback should create msg.headers when missing", async () => {
+	const { runtimePlugin, mockRed } = createPluginHarness(true);
+	assert.ok(runtimePlugin);
+
+	await runtimePlugin.onSettings({
+		opentelemetry: {
+			url: "http://localhost:4318/v1/traces",
+			protocol: "http",
+			serviceName: "test-service",
+			rootPrefix: "",
+			excludedNodeTypes: "",
+			propagateHeaderNodeTypes: "http request",
+			logLevel: "error",
+			timeout: 10,
+			attributeMappings: [],
+		},
+	});
+
+	const postDeliverListener = mockRed.hooks.listeners["postDeliver.otel"];
+	assert.ok(postDeliverListener);
+
+	const sendEvent = {
+		msg: {
+			_msgid: "headers-fallback-create-msg",
+			headers: null,
+			userProperties: null,
+			properties: { headers: null },
+		},
+		source: { node: { id: "source-node", type: "function", z: "flow" } },
+		destination: { node: { id: "dest-node", type: "http request", z: "flow" } },
+	};
+	assert.doesNotThrow(() => postDeliverListener(sendEvent));
+	assert.equal(typeof sendEvent.msg.headers, "object");
 	assert.ok(sendEvent.msg.headers.traceparent);
 
 	await runtimePlugin.onClose();
@@ -3417,6 +3506,37 @@ test("endSpan should handle orphan spans from switch nodes", () => {
 	assert.equal(getMsgSpans().size, 0);
 });
 
+test("endSpan orphan cleanup should continue when parent end throws", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "orphan-parent-end-throws" };
+	const switchNode = {
+		id: "switch-node-throws",
+		type: "switch",
+		name: "Switch",
+		z: "flow",
+	};
+	const functionNode = {
+		id: "function-node-throws",
+		type: "function",
+		name: "Function",
+		z: "flow",
+	};
+
+	createSpan(mockRed, tracer, msg, switchNode, {}, false);
+	createSpan(mockRed, tracer, msg, functionNode, {}, false);
+	const parent = getMsgSpans().get("orphan-parent-end-throws");
+	assert.ok(parent);
+	parent.parentSpan.end = () => {
+		throw new Error("parent end failed in orphan cleanup");
+	};
+
+	endSpan(mockRed, msg, null, functionNode);
+
+	assert.equal(getMsgSpans().has("orphan-parent-end-throws"), false);
+});
+
 test("endSpan keeps parent active when remaining child span is non-orphan", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
@@ -3442,6 +3562,59 @@ test("endSpan keeps parent active when remaining child span is non-orphan", () =
 	const parent = getMsgSpans().get("active-child-msg");
 	assert.ok(parent);
 	assert.equal(parent.spans.has("active-child-msg#function-node-b"), true);
+});
+
+test("endSpan should not fail when remaining child span has missing attributes", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "missing-attrs-msg" };
+	const functionNodeA = {
+		id: "function-node-a",
+		type: "function",
+		name: "Function A",
+		z: "flow",
+	};
+	const functionNodeB = {
+		id: "function-node-b",
+		type: "function",
+		name: "Function B",
+		z: "flow",
+	};
+	const logSpy = test.mock.method(nodeRedUtilStub.log, "log");
+	getSharedState().nodeRedLogApi = nodeRedUtilStub.log;
+
+	createSpan(mockRed, tracer, msg, functionNodeA, {}, false);
+	createSpan(mockRed, tracer, msg, functionNodeB, {}, false);
+
+	const parentBeforeEnd = getMsgSpans().get("missing-attrs-msg");
+	assert.ok(parentBeforeEnd);
+	parentBeforeEnd.spans.set("missing-attrs-msg#function-node-b", {
+		name: "broken-child-span",
+		ended: false,
+		end() {
+			this.ended = true;
+		},
+		setAttributes() {},
+		setAttribute() {},
+		setStatus() {},
+		recordException() {},
+		updateName() {},
+	});
+
+	endSpan(mockRed, msg, null, functionNodeA);
+
+	const parentAfterEnd = getMsgSpans().get("missing-attrs-msg");
+	assert.ok(parentAfterEnd);
+	assert.equal(parentAfterEnd.spans.has("missing-attrs-msg#function-node-b"), true);
+	assert.equal(
+		logSpy.mock.calls.some((call) =>
+			String(call.arguments?.[0]?.msg || "").includes(
+				"An error occurred during span ending",
+			),
+		),
+		false,
+	);
 });
 
 test("pluginLog should use Node-RED log API when available", () => {

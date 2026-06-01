@@ -1392,22 +1392,36 @@ function resolvePropagationCarrier(msg: RuntimeMessage): TextMapCarrier {
 
 function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 	const existingCarriers = listPropagationCarriers(msg);
-	if (existingCarriers.length > 0) {
-		const headersCarrier = PROPAGATION_CARRIER_ADAPTERS[
+	const ensureHeadersCarrier = (): TextMapCarrier | undefined =>
+		PROPAGATION_CARRIER_ADAPTERS[
 			PROPAGATION_CARRIER_ADAPTERS.length - 1
 		].ensureCarrier?.(msg);
+	if (existingCarriers.length > 0) {
+		const headersCarrier = ensureHeadersCarrier();
 		if (headersCarrier && !existingCarriers.includes(headersCarrier)) {
 			existingCarriers.push(headersCarrier);
 		}
 		return existingCarriers;
 	}
+	const createdCarriers: TextMapCarrier[] = [];
 	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
 		const createdCarrier = adapter.ensureCarrier?.(msg);
 		if (createdCarrier) {
-			return [createdCarrier];
+			if (!createdCarriers.includes(createdCarrier)) {
+				createdCarriers.push(createdCarrier);
+			}
+			break;
 		}
 	}
-	// Guaranteed by the headers adapter ensureCarrier fallback.
+	if (createdCarriers.length > 0) {
+		const headersCarrier = ensureHeadersCarrier();
+		if (headersCarrier && !createdCarriers.includes(headersCarrier)) {
+			createdCarriers.push(headersCarrier);
+		}
+		return createdCarriers;
+	}
+	// Absolute fallback for malformed message shapes.
+	msg.headers = {};
 	return [msg.headers as TextMapCarrier];
 }
 
@@ -1667,11 +1681,15 @@ function deleteOutdatedMsgSpans(): void {
 		for (const [msgId, msgSpan] of msgSpans) {
 			if (msgSpan.updateTimestamp < now - sharedState.timeout) {
 				// ending parent span and remove it
-					pluginLog(
-						"debug",
-						`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
-					);
-				msgSpan.parentSpan.end(msgSpan.updateTimestamp);
+				pluginLog(
+					"debug",
+					`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
+				);
+				try {
+					msgSpan.parentSpan.end(msgSpan.updateTimestamp);
+				} catch (error) {
+					pluginLog("warn", "Failed to end outdated parent span", error);
+				}
 				msgSpans.delete(msgId);
 				completedHttpMetricsMsgIds.delete(msgId);
 				completedHttpResponseMsgIds.delete(msgId);
@@ -2091,7 +2109,7 @@ function applyErrorToSpan(
 	if (exception instanceof Error || typeof exception === "string") {
 		span?.recordException(exception);
 	} else {
-		span?.recordException(String(exception));
+		span?.recordException(stringifyLogBody(exception));
 	}
 	span?.setStatus({
 		code: SpanStatusCode.ERROR,
@@ -2162,13 +2180,20 @@ function hasActiveNonOrphanChildSpan(
 ): boolean {
 	for (const [, childSpan] of parent.spans) {
 		const childSpanExt = childSpan as Span & {
-			attributes: Record<string, unknown>;
+			attributes?: Record<string, unknown>;
 			_creationTimestamp?: number;
 		};
+		const childNodeType =
+			typeof childSpanExt.attributes?.["node_red.node.type"] === "string"
+				? (childSpanExt.attributes["node_red.node.type"] as string)
+				: undefined;
+		// Keep parent active when child span metadata is missing/unknown.
+		// This avoids cleanup crashes and prevents prematurely ending the parent span.
+		if (!childNodeType) {
+			return true;
+		}
 		if (
-			!ORPHAN_NODE_TYPES.includes(
-				childSpanExt.attributes["node_red.node.type"] as string,
-			) ||
+			!ORPHAN_NODE_TYPES.includes(childNodeType) ||
 			(childSpanExt._creationTimestamp ?? 0) >
 				(currentSpanCreationTimestamp ?? 0)
 		) {
@@ -2194,7 +2219,11 @@ function cleanupOrphanSpansIfNeeded(
 		"debug",
 		`Parent span "${(parent.parentSpan as Span & OTelSpanExtension).name ?? ""}" no longer has child span, ending`,
 	);
-	parent.parentSpan.end();
+	try {
+		parent.parentSpan.end();
+	} catch (error) {
+		pluginLog("warn", "Failed to end parent span during orphan cleanup", error);
+	}
 	msgSpans.delete(msgId);
 	completedHttpMetricsMsgIds.delete(msgId);
 	completedHttpResponseMsgIds.delete(msgId);
@@ -2250,7 +2279,11 @@ function endSpan(
 				nodeDefinition,
 				hasError,
 			);
-		span?.end();
+		try {
+			span?.end();
+		} catch (endError) {
+			pluginLog("warn", "An error occurred while ending child span", endError);
+		}
 		const currentSpanCreationTimestamp = (span as Span & OTelSpanExtension)
 			?._creationTimestamp;
 		pluginLog(
