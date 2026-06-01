@@ -11,8 +11,10 @@ import {
 	defaultTextMapGetter,
 	defaultTextMapSetter,
 	type Histogram,
+	isSpanContextValid,
 	metrics,
 	type Span,
+	type SpanContext,
 	SpanKind,
 	SpanStatusCode,
 	type Tracer,
@@ -84,6 +86,24 @@ const fakeSpan = {
 	setStatus: () => {},
 	setAttribute: () => {},
 };
+
+function resolveSafeSpanContext(
+	span: Span | undefined,
+): SpanContext | undefined {
+	if (
+		!span ||
+		typeof (span as Span & { spanContext?: unknown }).spanContext !== "function"
+	) {
+		return;
+	}
+	try {
+		const spanContext = span.spanContext();
+		return isSpanContextValid(spanContext) ? spanContext : undefined;
+	} catch {
+		return;
+	}
+}
+
 type MessageSpanRecord = {
 	parentSpan: Span;
 	spans: Map<string, Span>;
@@ -1677,12 +1697,15 @@ function logEvent(
 		const parent = msgSpans.get(msgId);
 		const spanNode =
 			event.node?.node || event.destination?.node || event.source?.node;
-		const spanForLog =
+		const candidateSpanForLog =
 			spanNode && parent
 				? parent.spans.get(getSpanId(event.msg, spanNode)) || parent.parentSpan
 				: parent?.parentSpan;
-		const emitContext = spanForLog
-			? trace.setSpan(context.active(), spanForLog)
+		const spanContextForLog =
+			resolveSafeSpanContext(candidateSpanForLog) ??
+			resolveSafeSpanContext(parent?.parentSpan);
+		const emitContext = spanContextForLog
+			? trace.setSpanContext(context.active(), spanContextForLog)
 			: context.active();
 		const attributes: Record<string, string> = {
 			[ATTR_MSG_ID]: msgId,
