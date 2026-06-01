@@ -1425,14 +1425,21 @@ function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
 			if (!adapter.ensureCarrier) {
 				continue;
 			}
-			// Only call ensureCarrier when the mutation target can be extended.
-			// This avoids expected TypeErrors for frozen/non-extensible messages.
-			const requiresExtensibleMsg =
-				adapter === PROPAGATION_CARRIER_ADAPTERS[0] ||
-				adapter === PROPAGATION_CARRIER_ADAPTERS[
-					PROPAGATION_CARRIER_ADAPTERS.length - 1
-				];
-			if (requiresExtensibleMsg && !Object.isExtensible(msg)) {
+			// Only call ensureCarrier when its specific mutation target can be extended.
+			// This avoids expected TypeErrors for frozen/non-extensible message shapes.
+			if (
+				adapter === PROPAGATION_CARRIER_ADAPTERS[0] &&
+				!Object.isExtensible(msg.properties ?? {})
+			) {
+				continue;
+			}
+			if (
+				adapter ===
+					PROPAGATION_CARRIER_ADAPTERS[
+						PROPAGATION_CARRIER_ADAPTERS.length - 1
+					] &&
+				!Object.isExtensible(msg)
+			) {
 				continue;
 			}
 			createdCarrier = adapter.ensureCarrier(msg);

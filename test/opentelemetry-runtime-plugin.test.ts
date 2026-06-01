@@ -1195,6 +1195,21 @@ test("resolvePropagationCarriers preserves extensible existing carriers when msg
 	assert.equal(carriers.includes(amqpHeaders), true);
 });
 
+test("resolvePropagationCarriers creates AMQP carrier when msg is frozen but msg.properties is extensible", () => {
+	const msg = {
+		_msgid: "frozen-msg-extensible-properties",
+		properties: {},
+	};
+	Object.freeze(msg);
+
+	const carriers = resolvePropagationCarriers(msg as any);
+
+	assert.equal(Array.isArray(carriers), true);
+	assert.ok(msg.properties.headers);
+	assert.equal(carriers.includes(msg.properties.headers), true);
+	assert.equal(typeof msg.properties.headers, "object");
+});
+
 test("resolvePropagationCarriers preserves extensible existing headers when msg is non-extensible", () => {
 	const headers = { existing: "keep" };
 	const msg = {
