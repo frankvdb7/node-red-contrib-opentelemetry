@@ -2173,7 +2173,11 @@ function applyErrorToSpan(
 	span?.setStatus({
 		code: SpanStatusCode.ERROR,
 		message:
-			exception instanceof Error ? exception.message : stringifyLogBody(exception),
+			exception instanceof Error
+				? exception.message
+				: typeof (exception as { message?: unknown })?.message === "string"
+					? ((exception as { message: string }).message)
+					: stringifyLogBody(exception),
 	});
 	parent.parentSpan.setStatus({ code: SpanStatusCode.ERROR });
 	return true;
