@@ -4591,3 +4591,22 @@ test("getFlowOrSubflowName maintains compatibility for normal flows and subflows
 	assert.equal(getFlowOrSubflowName(red, "f2"), "Node Name");
 	assert.equal(getFlowOrSubflowName(red, "unknown"), undefined);
 });
+
+test("getContainingSubflow only resolves subflow types during fallback", () => {
+	const red = {
+		nodes: {
+			getFlows: () => ({ flows: [] }),
+			getNode: (id) => {
+				if (id === "subflow-id") return { id, type: "subflow", name: "Correct" };
+				if (id === "flow-id") return { id, type: "tab", name: "Incorrect" };
+				return undefined;
+			},
+		},
+	};
+	const subflowRes = getContainingSubflow(red, { z: "subflow-id" });
+	assert.ok(subflowRes);
+	assert.equal(subflowRes.name, "Correct");
+
+	const flowRes = getContainingSubflow(red, { z: "flow-id" });
+	assert.equal(flowRes, undefined);
+});

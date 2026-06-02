@@ -1622,7 +1622,7 @@ function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
 		const subflowDefinition = RED.nodes?.getNode?.(
 			subflowId,
 		) as RuntimeRedNodeInstance | undefined;
-		if (subflowDefinition) {
+		if (subflowDefinition?.type === "subflow") {
 			return {
 				id: subflowId,
 				name: subflowDefinition.name,
