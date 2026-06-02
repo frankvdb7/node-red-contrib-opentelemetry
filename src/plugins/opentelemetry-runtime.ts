@@ -1571,7 +1571,7 @@ function getFlowOrSubflowName(RED: RuntimeApi, flowId: string): string | undefin
 	if (flowEntry) {
 		return flowEntry.label ?? flowEntry.name;
 	}
-	const flow = RED.nodes.getNode(flowId) as RuntimeRedNodeInstance | undefined;
+	const flow = RED.nodes.getNode?.(flowId) as RuntimeRedNodeInstance | undefined;
 	return flow?.name;
 }
 
@@ -1613,14 +1613,14 @@ function getSubflowNameById(
 	RED: RuntimeApi,
 	subflowId: string | undefined,
 ): string | undefined {
-	if (!subflowId) {
+	if (!RED?.nodes || !subflowId) {
 		return undefined;
 	}
 	const subflowEntry = getSubflowEntryById(RED, subflowId);
 	if (subflowEntry) {
 		return subflowEntry.label ?? subflowEntry.name;
 	}
-	const subflowDefinition = RED.nodes?.getNode?.(
+	const subflowDefinition = RED.nodes.getNode?.(
 		subflowId,
 	) as RuntimeRedNodeInstance | undefined;
 	return subflowDefinition?.type === "subflow" ? subflowDefinition.name : undefined;
@@ -2411,7 +2411,7 @@ function endSpan(
 		}
 			const { parent, span } = spanContext;
 			const runtimeNode = RED.nodes?.getNode?.(
-				nodeDefinition.id,
+				nodeDefinition?.id,
 			) as RuntimeRedNodeInstance | undefined;
 			const flowName =
 				getFlowOrSubflowName(RED, nodeDefinition.z) || getFlowNameFromRuntimeNode(runtimeNode);
