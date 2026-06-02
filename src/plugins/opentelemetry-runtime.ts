@@ -1566,7 +1566,7 @@ function getSpanId(
  */
 function getFlowOrSubflowName(RED: RuntimeApi, flowId: string): string | undefined {
 	if (!RED?.nodes || !flowId) return undefined;
-	const flowConfig = RED.nodes.getFlows?.();
+	const flowConfig = RED.nodes?.getFlows?.();
 	const flowEntry = flowConfig?.flows?.find((entry) => entry.id === flowId);
 	if (flowEntry) {
 		return flowEntry.label ?? flowEntry.name;
@@ -1603,7 +1603,7 @@ function getSubflowEntryById(RED: RuntimeApi, subflowId: string | undefined) {
 	if (!RED?.nodes || !subflowId) {
 		return undefined;
 	}
-	const flowConfig = RED.nodes.getFlows?.();
+	const flowConfig = RED.nodes?.getFlows?.();
 	return flowConfig?.flows?.find(
 		(entry) => entry.type === "subflow" && entry.id === subflowId,
 	);
@@ -1617,6 +1617,18 @@ function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
 			name: subflowEntry.label ?? subflowEntry.name,
 		};
 	}
+	const subflowId = nodeDefinition?.z;
+	if (subflowId) {
+		const subflowDefinition = RED.nodes?.getNode?.(
+			subflowId,
+		) as RuntimeRedNodeInstance | undefined;
+		if (subflowDefinition) {
+			return {
+				id: subflowId,
+				name: subflowDefinition.name,
+			};
+		}
+	}
 	return undefined;
 }
 
@@ -1629,7 +1641,14 @@ function getSubflowNameFromType(
 		return undefined;
 	}
 	const subflowEntry = getSubflowEntryById(RED, subflowId);
-	return subflowEntry?.label ?? subflowEntry?.name;
+	const subflowName = subflowEntry?.label ?? subflowEntry?.name;
+	if (subflowName) {
+		return subflowName;
+	}
+	const subflowDefinition = RED.nodes?.getNode?.(
+		subflowId,
+	) as RuntimeRedNodeInstance | undefined;
+	return subflowDefinition?.name;
 }
 
 function getResolvedNodeName(
@@ -2051,7 +2070,9 @@ function createSpan(
 				const subflowIdFromType = getSubflowIdFromType(nodeDefinition.type);
 				if (subflowIdFromType) {
 					subflowId = subflowIdFromType;
-					subflowName = getSubflowNameFromType(RED, nodeDefinition.type);
+					subflowName =
+						getSubflowNameFromType(RED, nodeDefinition.type) ||
+						getSubflowNameFromRuntimeNode(runtimeNode);
 				} else {
 					const containingSubflow = getContainingSubflow(RED, nodeDefinition);
 					if (containingSubflow) {
