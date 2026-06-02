@@ -1090,10 +1090,10 @@ function setAttributeIfPrimitive(
 }
 
 function extractEndpointFromNode(nodeDefinition: RuntimeNodeDef): string | undefined {
-	if (typeof nodeDefinition.serverConfig?.path === "string") {
+	if (typeof nodeDefinition?.serverConfig?.path === "string") {
 		return nodeDefinition.serverConfig.path;
 	}
-	if (typeof nodeDefinition.url === "string") {
+	if (typeof nodeDefinition?.url === "string") {
 		return nodeDefinition.url;
 	}
 	return undefined;
@@ -1119,7 +1119,7 @@ function buildAutoSpanAttributes(
 		}
 	}
 
-	const incomingMethod = msg.req?.method ?? nodeDefinition.method;
+	const incomingMethod = msg.req?.method ?? nodeDefinition?.method;
 	if (incomingMethod) {
 		attributes[ATTR_HTTP_REQUEST_METHOD] = String(incomingMethod).toUpperCase();
 	}
@@ -1162,7 +1162,7 @@ function hasHttpServerContext(
 		msg.req?.headers ||
 			msg.req?.method ||
 			msg.req?.path ||
-			nodeDefinition.method,
+			nodeDefinition?.method,
 	);
 }
 
@@ -1187,7 +1187,7 @@ function shouldHandleTerminalHttpResponse(
 	msg: RuntimeMessage,
 	nodeDefinition: RuntimeNodeDef,
 ): boolean {
-	if (nodeDefinition.type === "http response") {
+	if (nodeDefinition?.type === "http response") {
 		return true;
 	}
 	const response = msg.res?._res as
@@ -1552,10 +1552,10 @@ function getSpanId(
 	nodeDefinition: NodeDef,
 ): string {
 	const msgId =
-		nodeDefinition.type === "split" && msg.otelRootMsgId
+		nodeDefinition?.type === "split" && msg.otelRootMsgId
 			? msg.otelRootMsgId
 			: msg._msgid;
-	return `${msgId}#${nodeDefinition.id}`;
+	return `${msgId}#${nodeDefinition?.id}`;
 }
 
 /**
@@ -1566,12 +1566,12 @@ function getSpanId(
  */
 function getFlowOrSubflowName(RED: RuntimeApi, flowId: string): string | undefined {
 	if (!RED?.nodes || !flowId) return undefined;
-	const flowConfig = RED.nodes?.getFlows?.();
+	const flowConfig = RED.nodes.getFlows?.();
 	const flowEntry = flowConfig?.flows?.find((entry) => entry.id === flowId);
 	if (flowEntry) {
 		return flowEntry.label ?? flowEntry.name;
 	}
-	const flow = RED.nodes?.getNode?.(flowId) as RuntimeRedNodeInstance | undefined;
+	const flow = RED.nodes.getNode(flowId) as RuntimeRedNodeInstance | undefined;
 	return flow?.name;
 }
 
@@ -1603,31 +1603,34 @@ function getSubflowEntryById(RED: RuntimeApi, subflowId: string | undefined) {
 	if (!RED?.nodes || !subflowId) {
 		return undefined;
 	}
-	const flowConfig = RED.nodes?.getFlows?.();
+	const flowConfig = RED.nodes.getFlows?.();
 	return flowConfig?.flows?.find(
 		(entry) => entry.type === "subflow" && entry.id === subflowId,
 	);
 }
 
-function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
-	const subflowEntry = getSubflowEntryById(RED, nodeDefinition?.z);
-	if (subflowEntry) {
-		return {
-			id: subflowEntry.id,
-			name: subflowEntry.label ?? subflowEntry.name,
-		};
+function getSubflowNameById(
+	RED: RuntimeApi,
+	subflowId: string | undefined,
+): string | undefined {
+	if (!subflowId) {
+		return undefined;
 	}
+	const subflowEntry = getSubflowEntryById(RED, subflowId);
+	if (subflowEntry) {
+		return subflowEntry.label ?? subflowEntry.name;
+	}
+	const subflowDefinition = RED.nodes?.getNode?.(
+		subflowId,
+	) as RuntimeRedNodeInstance | undefined;
+	return subflowDefinition?.type === "subflow" ? subflowDefinition.name : undefined;
+}
+
+function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
 	const subflowId = nodeDefinition?.z;
-	if (subflowId) {
-		const subflowDefinition = RED.nodes?.getNode?.(
-			subflowId,
-		) as RuntimeRedNodeInstance | undefined;
-		if (subflowDefinition?.type === "subflow") {
-			return {
-				id: subflowId,
-				name: subflowDefinition.name,
-			};
-		}
+	const subflowName = getSubflowNameById(RED, subflowId);
+	if (subflowId && subflowName) {
+		return { id: subflowId, name: subflowName };
 	}
 	return undefined;
 }
@@ -1637,18 +1640,7 @@ function getSubflowNameFromType(
 	nodeType: string,
 ): string | undefined {
 	const subflowId = getSubflowIdFromType(nodeType);
-	if (!subflowId) {
-		return undefined;
-	}
-	const subflowEntry = getSubflowEntryById(RED, subflowId);
-	const subflowName = subflowEntry?.label ?? subflowEntry?.name;
-	if (subflowName) {
-		return subflowName;
-	}
-	const subflowDefinition = RED.nodes?.getNode?.(
-		subflowId,
-	) as RuntimeRedNodeInstance | undefined;
-	return subflowDefinition?.name;
+	return getSubflowNameById(RED, subflowId);
 }
 
 function getResolvedNodeName(
@@ -1656,19 +1648,20 @@ function getResolvedNodeName(
 	nodeDefinition: RuntimeNodeDef,
 ): string | undefined {
 	const runtimeNode = RED.nodes?.getNode?.(
-		nodeDefinition.id,
+		nodeDefinition?.id,
 	) as RuntimeRedNodeInstance | undefined;
-	if (isSubflowNodeType(nodeDefinition.type)) {
+	const nodeType = nodeDefinition?.type;
+	if (nodeType && isSubflowNodeType(nodeType)) {
 		return (
-			nodeDefinition.name ||
-			getSubflowNameFromType(RED, nodeDefinition.type) ||
+			nodeDefinition?.name ||
+			getSubflowNameFromType(RED, nodeType) ||
 			getSubflowNameFromRuntimeNode(runtimeNode) ||
 			runtimeNode?.name
 		);
 	}
 	return (
-		nodeDefinition.name ||
-		getSubflowNameFromType(RED, nodeDefinition.type) ||
+		nodeDefinition?.name ||
+		(nodeType ? getSubflowNameFromType(RED, nodeType) : undefined) ||
 		runtimeNode?.name
 	);
 }
@@ -1910,9 +1903,9 @@ function buildCommonAttributes(
 ): Record<string, string | undefined> {
 	const commonAttributes: Record<string, string | undefined> = {
 		[ATTR_MSG_ID]: msgId,
-		[ATTR_FLOW_ID]: nodeDefinition.z,
-		[ATTR_NODE_ID]: nodeDefinition.id,
-		[ATTR_NODE_TYPE]: nodeDefinition.type,
+		[ATTR_FLOW_ID]: nodeDefinition?.z,
+		[ATTR_NODE_ID]: nodeDefinition?.id,
+		[ATTR_NODE_TYPE]: nodeDefinition?.type,
 		[ATTR_NODE_NAME]: nodeName,
 	};
 	if (flowName) {
@@ -2054,24 +2047,24 @@ function createSpan(
 
 				const nodeName = getResolvedNodeName(RED, nodeDefinition);
 				const runtimeNode = RED.nodes?.getNode?.(
-					nodeDefinition.id,
+					nodeDefinition?.id,
 				) as RuntimeRedNodeInstance | undefined;
 				const spanName =
-					nodeDefinition.type.startsWith("subflow:") && nodeName
+					nodeDefinition?.type?.startsWith("subflow:") && nodeName
 						? `${nodeDefinition.type} ${nodeName}`
-						: (nodeName ?? nodeDefinition.type);
+						: (nodeName ?? nodeDefinition?.type);
 				const flowName =
-					getFlowOrSubflowName(RED, nodeDefinition.z) ||
+					getFlowOrSubflowName(RED, nodeDefinition?.z) ||
 					getFlowNameFromRuntimeNode(runtimeNode);
 
 				let subflowId: string | undefined;
 				let subflowName: string | undefined;
 
-				const subflowIdFromType = getSubflowIdFromType(nodeDefinition.type);
+				const subflowIdFromType = getSubflowIdFromType(nodeDefinition?.type);
 				if (subflowIdFromType) {
 					subflowId = subflowIdFromType;
 					subflowName =
-						getSubflowNameFromType(RED, nodeDefinition.type) ||
+						getSubflowNameById(RED, subflowId) ||
 						getSubflowNameFromRuntimeNode(runtimeNode);
 				} else {
 					const containingSubflow = getContainingSubflow(RED, nodeDefinition);
@@ -2082,7 +2075,7 @@ function createSpan(
 				}
 
 			const now = Date.now();
-			const kind = resolveSpanKind(nodeDefinition.type);
+			const kind = resolveSpanKind(nodeDefinition?.type);
 			const commonAttributes = buildCommonAttributes(
 				msgId,
 				nodeDefinition,
@@ -2094,7 +2087,7 @@ function createSpan(
 		if (isNotTraced && !existingParent) {
 			pluginLog(
 				"debug",
-				`=> Skipped span creation for excluded or non-included root node ${nodeDefinition.type}`,
+				`=> Skipped span creation for excluded or non-included root node ${nodeDefinition?.type}`,
 			);
 			return;
 		}
@@ -2114,7 +2107,7 @@ function createSpan(
 			);
 			parentSpan = createdParent.parentSpan;
 			ctx = createdParent.context;
-			pluginLog("debug", `=> Created parent span for ${nodeDefinition.type}`);
+			pluginLog("debug", `=> Created parent span for ${nodeDefinition?.type}`);
 		}
 
 		if (isNotTraced) {
@@ -2123,8 +2116,8 @@ function createSpan(
 		const localAttributes = parseAttribute(
 			false,
 			msg,
-			nodeDefinition.z,
-			nodeDefinition.type,
+			nodeDefinition?.z,
+			nodeDefinition?.type,
 		);
 		pluginLog(
 			"debug",
@@ -2134,7 +2127,7 @@ function createSpan(
 			spanName,
 			{
 				attributes: {
-					[ATTR_CODE_FUNCTION_NAME]: nodeDefinition.type,
+					[ATTR_CODE_FUNCTION_NAME]: nodeDefinition?.type,
 					[ATTR_IS_MESSAGE_CREATION]: false,
 					...commonAttributes,
 					...localAttributes,
@@ -2160,14 +2153,15 @@ function createSpan(
 			}
 		}
 
-		pluginLog("debug", `=> Created span for ${nodeDefinition.type}`);
+		pluginLog("debug", `=> Created span for ${nodeDefinition?.type}`);
 
 		// store child span
 			const parent = msgSpans.get(msgId);
 			parent?.spans.set(spanId, span);
 			if (parent) {
 				parent.updateTimestamp = now;
-				if (isSubflowNodeType(nodeDefinition.type)) {
+				const currentType = nodeDefinition?.type;
+				if (currentType && isSubflowNodeType(currentType)) {
 					activateSubflowSpan(msgId, spanId);
 				}
 			}
@@ -3014,6 +3008,7 @@ module.exports.__test__ = {
 	isSubflowNodeType,
 	getSubflowIdFromType,
 	getSubflowEntryById,
+	getSubflowNameById,
 	getContainingSubflow,
 	getFlowOrSubflowName,
 	maskUrlCredentials,
