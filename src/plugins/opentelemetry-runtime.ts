@@ -1565,7 +1565,7 @@ function getSpanId(
  * @returns {string|undefined}
  */
 function getFlowOrSubflowName(RED: RuntimeApi, flowId: string): string | undefined {
-	if (!RED || !flowId) return undefined;
+	if (!RED?.nodes || !flowId) return undefined;
 	const flowConfig = RED.nodes.getFlows?.();
 	const flowEntry = flowConfig?.flows?.find((entry) => entry.id === flowId);
 	if (flowEntry) {
