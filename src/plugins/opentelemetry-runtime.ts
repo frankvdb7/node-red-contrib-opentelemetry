@@ -1089,19 +1089,19 @@ function setAttributeIfPrimitive(
 	}
 }
 
-function extractEndpointFromNode(nodeDefinition: RuntimeNodeDef): string | undefined {
+function extractEndpointFromNode(nodeDefinition: RuntimeNodeDef | undefined): string | undefined {
 	if (typeof nodeDefinition?.serverConfig?.path === "string") {
-		return nodeDefinition.serverConfig.path;
+		return nodeDefinition?.serverConfig?.path;
 	}
 	if (typeof nodeDefinition?.url === "string") {
-		return nodeDefinition.url;
+		return nodeDefinition?.url;
 	}
 	return undefined;
 }
 
 function buildAutoSpanAttributes(
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): Record<string, string | number | boolean | undefined> {
 	const attributes: Record<string, string | number | boolean | undefined> = {};
 	const endpoint = extractEndpointFromNode(nodeDefinition);
@@ -1185,7 +1185,7 @@ function captureHttpStartTimeIfNeeded(
 
 function shouldHandleTerminalHttpResponse(
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): boolean {
 	if (nodeDefinition?.type === "http response") {
 		return true;
@@ -1549,7 +1549,7 @@ function getMsgId(msg: { otelRootMsgId?: string; _msgid: string }): string {
  */
 function getSpanId(
 	msg: { otelRootMsgId?: string; _msgid: string },
-	nodeDefinition: NodeDef,
+	nodeDefinition: NodeDef | undefined,
 ): string {
 	const msgId =
 		nodeDefinition?.type === "split" && msg.otelRootMsgId
@@ -1637,7 +1637,7 @@ function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef | 
 
 function getSubflowNameFromType(
 	RED: RuntimeApi,
-	nodeType: string,
+	nodeType: string | undefined,
 ): string | undefined {
 	const subflowId = getSubflowIdFromType(nodeType);
 	return getSubflowNameById(RED, subflowId);
@@ -1645,11 +1645,12 @@ function getSubflowNameFromType(
 
 function getResolvedNodeName(
 	RED: RuntimeApi,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): string | undefined {
-	const runtimeNode = RED.nodes?.getNode?.(
-		nodeDefinition?.id,
-	) as RuntimeRedNodeInstance | undefined;
+	const nodeId = nodeDefinition?.id;
+	const runtimeNode = nodeId
+		? (RED.nodes?.getNode?.(nodeId) as RuntimeRedNodeInstance | undefined)
+		: undefined;
 	const nodeType = nodeDefinition?.type;
 	if (nodeType && isSubflowNodeType(nodeType)) {
 		return (
@@ -1666,7 +1667,10 @@ function getResolvedNodeName(
 	);
 }
 
-function isSubflowNodeType(nodeType: string): boolean {
+function isSubflowNodeType(nodeType: string | undefined): boolean {
+	if (!nodeType) {
+		return false;
+	}
 	return nodeType.startsWith("subflow:");
 }
 
@@ -1949,7 +1953,7 @@ function createAndStoreParentSpan(
 		{
 			attributes: {
 				[ATTR_IS_MESSAGE_CREATION]: true,
-				[ATTR_SERVICE_NAME]: nodeDefinition.type,
+				[ATTR_SERVICE_NAME]: nodeDefinition?.type,
 				...commonAttributes,
 			},
 			kind,
@@ -2008,7 +2012,7 @@ function storeFakeChildSpan(
 		spanId,
 		Object.assign(
 			{
-				attributes: { [ATTR_NODE_TYPE]: nodeDefinition.type },
+				attributes: { [ATTR_NODE_TYPE]: nodeDefinition?.type },
 				_creationTimestamp: now,
 			},
 			fakeSpan,
@@ -2051,7 +2055,7 @@ function createSpan(
 				) as RuntimeRedNodeInstance | undefined;
 				const spanName =
 					nodeDefinition?.type?.startsWith("subflow:") && nodeName
-						? `${nodeDefinition.type} ${nodeName}`
+						? `${nodeDefinition?.type} ${nodeName}`
 						: (nodeName ?? nodeDefinition?.type);
 				const flowName =
 					getFlowOrSubflowName(RED, nodeDefinition?.z) ||
@@ -2121,7 +2125,7 @@ function createSpan(
 		);
 		pluginLog(
 			"debug",
-			`Local span attributes (start) for ${nodeDefinition.id}, ${nodeDefinition.type}: ${JSON.stringify(localAttributes)}`,
+			`Local span attributes (start) for ${nodeDefinition?.id}, ${nodeDefinition?.type}: ${JSON.stringify(localAttributes)}`,
 		);
 		const span = tracer.startSpan(
 			spanName,
@@ -2272,13 +2276,13 @@ function applyErrorToSpan(
 function applyLocalEndAttributes(
 	span: Span | undefined,
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): void {
 	const localAttributes = parseAttribute(
 		true,
 		msg,
-		nodeDefinition.z,
-		nodeDefinition.type,
+		nodeDefinition?.z as string,
+		nodeDefinition?.type as string,
 	);
 	if (localAttributes === undefined) {
 		return;
@@ -2288,7 +2292,7 @@ function applyLocalEndAttributes(
 	}
 	pluginLog(
 		"debug",
-		`Local span attributes (end) for ${nodeDefinition.id}, ${nodeDefinition.type}: ${JSON.stringify(localAttributes)}`,
+		`Local span attributes (end) for ${nodeDefinition?.id}, ${nodeDefinition?.type}: ${JSON.stringify(localAttributes)}`,
 	);
 }
 
@@ -2414,7 +2418,7 @@ function endSpan(
 				nodeDefinition?.id,
 			) as RuntimeRedNodeInstance | undefined;
 			const flowName =
-				getFlowOrSubflowName(RED, nodeDefinition.z) || getFlowNameFromRuntimeNode(runtimeNode);
+				getFlowOrSubflowName(RED, nodeDefinition?.z) || getFlowNameFromRuntimeNode(runtimeNode);
 		if (flowName) {
 			span?.setAttribute(ATTR_FLOW_NAME, flowName);
 			}
@@ -2438,7 +2442,7 @@ function endSpan(
 			?._creationTimestamp;
 		pluginLog(
 			"debug",
-			`==> Ended span for ${nodeDefinition.id} ${nodeDefinition.type}`,
+			`==> Ended span for ${nodeDefinition?.id} ${nodeDefinition?.type}`,
 		);
 			parent.spans.delete(msgSpanId);
 			deactivateSubflowSpan(msgId, msgSpanId);
