@@ -1156,7 +1156,7 @@ function buildAutoSpanAttributes(
 
 function hasHttpServerContext(
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): boolean {
 	return Boolean(
 		msg.req?.headers ||
@@ -1172,7 +1172,7 @@ function hasHttpResponseContext(msg: RuntimeMessage): boolean {
 
 function captureHttpStartTimeIfNeeded(
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): void {
 	if (msg.otelStartTime !== undefined) {
 		return;
@@ -1942,7 +1942,7 @@ function createAndStoreParentSpan(
 	msg: RuntimeMessage,
 	msgId: string,
 	spanName: string,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 	kind: SpanKind,
 	commonAttributes: Record<string, string | undefined>,
 	now: number,
@@ -2005,7 +2005,7 @@ function resolveParentContext(
 function storeFakeChildSpan(
 	msgId: string,
 	spanId: string,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 	now: number,
 ): Span {
 	msgSpans.get(msgId)?.spans.set(
@@ -2034,10 +2034,13 @@ function createSpan(
 	RED: RuntimeApi,
 	tracer: Tracer,
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 	_node: RuntimeRedNodeInstance | null,
 	isNotTraced: boolean,
 ): Span | undefined {
+	if (!nodeDefinition) {
+		return;
+	}
 	try {
 		const msgId = getMsgId(msg);
 		if (msgId === undefined) {
@@ -2178,7 +2181,7 @@ function createSpan(
 function recordHttpResponseMetricsIfNeeded(
 	msgId: string,
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 	parentSpan?: Span,
 ): void {
 	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) {
@@ -2301,7 +2304,7 @@ function applyHttpResponseCompletion(
 	parent: { parentSpan: Span; spans: Map<string, Span> },
 	span: Span | undefined,
 	msg: RuntimeMessage,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 	hasError: boolean,
 ): void {
 	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) {
@@ -2394,8 +2397,11 @@ function endSpan(
 	RED: RuntimeApi,
 	msg: RuntimeMessage,
 	error: unknown,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 ): void {
+	if (!nodeDefinition) {
+		return;
+	}
 	try {
 			const msgId = getMsgId(msg);
 			if (!msgId) {
