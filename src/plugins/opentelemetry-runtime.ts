@@ -1564,7 +1564,7 @@ function getSpanId(
  * @param {string} flowId
  * @returns {string|undefined}
  */
-function getFlowOrSubflowName(RED: RuntimeApi, flowId: string): string | undefined {
+function getFlowOrSubflowName(RED: RuntimeApi, flowId: string | undefined): string | undefined {
 	if (!RED?.nodes || !flowId) return undefined;
 	const flowConfig = RED.nodes.getFlows?.();
 	const flowEntry = flowConfig?.flows?.find((entry) => entry.id === flowId);
@@ -1592,8 +1592,8 @@ function getSubflowNameFromRuntimeNode(
 	);
 }
 
-function getSubflowIdFromType(nodeType: string): string | undefined {
-	if (!nodeType.startsWith("subflow:")) {
+function getSubflowIdFromType(nodeType: string | undefined): string | undefined {
+	if (!nodeType || !nodeType.startsWith("subflow:")) {
 		return undefined;
 	}
 	return nodeType.slice("subflow:".length) || undefined;
@@ -1626,7 +1626,7 @@ function getSubflowNameById(
 	return subflowDefinition?.type === "subflow" ? subflowDefinition.name : undefined;
 }
 
-function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
+function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef | undefined) {
 	const subflowId = nodeDefinition?.z;
 	const subflowName = getSubflowNameById(RED, subflowId);
 	if (subflowId && subflowName) {
@@ -1895,7 +1895,7 @@ function resolveSpanKind(nodeType: string): SpanKind {
 
 function buildCommonAttributes(
 	msgId: string,
-	nodeDefinition: RuntimeNodeDef,
+	nodeDefinition: RuntimeNodeDef | undefined,
 	nodeName: string | undefined,
 	flowName: string | undefined,
 	subflowId?: string,
