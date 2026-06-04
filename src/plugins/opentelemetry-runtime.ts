@@ -1558,6 +1558,42 @@ function getSpanId(
 	return `${msgId}#${nodeDefinition?.id}`;
 }
 
+const FLOW_CACHE_TTL = 60000;
+const flowConfigCache = new WeakMap<
+	RuntimeApi,
+	{
+		entries: Map<string, { name?: string; type?: string }>;
+		lastRefresh: number;
+	}
+>();
+
+function getFlowConfigMap(
+	RED: RuntimeApi,
+): Map<string, { name?: string; type?: string }> | undefined {
+	if (!RED?.nodes?.getFlows) {
+		return undefined;
+	}
+	const now = Date.now();
+	let cache = flowConfigCache.get(RED);
+	if (!cache || now - cache.lastRefresh > FLOW_CACHE_TTL) {
+		const flowConfig = RED.nodes.getFlows();
+		const entries = new Map<string, { name?: string; type?: string }>();
+		if (flowConfig?.flows) {
+			for (const flow of flowConfig.flows) {
+				if (flow.id) {
+					entries.set(flow.id, {
+						name: flow.label ?? flow.name,
+						type: flow.type,
+					});
+				}
+			}
+		}
+		cache = { entries, lastRefresh: now };
+		flowConfigCache.set(RED, cache);
+	}
+	return cache.entries;
+}
+
 /**
  * Get the name of a flow (or subflow) by its ID
  * @param {RuntimeApi} RED Node-RED runtime object
@@ -1566,10 +1602,10 @@ function getSpanId(
  */
 function getFlowOrSubflowName(RED: RuntimeApi, flowId: string | undefined): string | undefined {
 	if (!RED?.nodes || !flowId) return undefined;
-	const flowConfig = RED.nodes.getFlows?.();
-	const flowEntry = flowConfig?.flows?.find((entry) => entry.id === flowId);
+	const flowMap = getFlowConfigMap(RED);
+	const flowEntry = flowMap?.get(flowId);
 	if (flowEntry) {
-		return flowEntry.label ?? flowEntry.name;
+		return flowEntry.name;
 	}
 	const flow = RED.nodes.getNode?.(flowId) as RuntimeRedNodeInstance | undefined;
 	return flow?.name;
@@ -1599,16 +1635,6 @@ function getSubflowIdFromType(nodeType: string | undefined): string | undefined 
 	return nodeType.slice("subflow:".length) || undefined;
 }
 
-function getSubflowEntryById(RED: RuntimeApi, subflowId: string | undefined) {
-	if (!RED?.nodes || !subflowId) {
-		return undefined;
-	}
-	const flowConfig = RED.nodes.getFlows?.();
-	return flowConfig?.flows?.find(
-		(entry) => entry.type === "subflow" && entry.id === subflowId,
-	);
-}
-
 function getSubflowNameById(
 	RED: RuntimeApi,
 	subflowId: string | undefined,
@@ -1616,9 +1642,10 @@ function getSubflowNameById(
 	if (!RED?.nodes || !subflowId) {
 		return undefined;
 	}
-	const subflowEntry = getSubflowEntryById(RED, subflowId);
-	if (subflowEntry) {
-		return subflowEntry.label ?? subflowEntry.name;
+	const flowMap = getFlowConfigMap(RED);
+	const subflowEntry = flowMap?.get(subflowId);
+	if (subflowEntry?.type === "subflow") {
+		return subflowEntry.name;
 	}
 	const subflowDefinition = RED.nodes.getNode?.(
 		subflowId,
@@ -3015,7 +3042,15 @@ module.exports.__test__ = {
 	shouldHandleTerminalHttpResponse,
 	isSubflowNodeType,
 	getSubflowIdFromType,
-	getSubflowEntryById,
+	getSubflowEntryById: (RED: RuntimeApi, subflowId: string | undefined) => {
+		if (!RED || !subflowId) return undefined;
+		const flowMap = getFlowConfigMap(RED);
+		const entry = flowMap?.get(subflowId);
+		if (entry?.type === "subflow") {
+			return { id: subflowId, ...entry };
+		}
+		return undefined;
+	},
 	getSubflowNameById,
 	getContainingSubflow,
 	getFlowOrSubflowName,
