@@ -2120,12 +2120,10 @@ function createSpan(
 		if (isNotTraced) {
 			return storeFakeChildSpan(msgId, spanId, nodeDefinition, now);
 		}
-		const localAttributes = parseAttribute(
-			false,
-			msg,
-			nodeDefinition?.z,
-			nodeDefinition?.type,
-		);
+		const localAttributes =
+			nodeDefinition.z && nodeDefinition.type
+				? parseAttribute(false, msg, nodeDefinition.z, nodeDefinition.type)
+				: undefined;
 		pluginLog(
 			"debug",
 			`Local span attributes (start) for ${nodeDefinition?.id}, ${nodeDefinition?.type}: ${JSON.stringify(localAttributes)}`,
@@ -2281,11 +2279,14 @@ function applyLocalEndAttributes(
 	msg: RuntimeMessage,
 	nodeDefinition: RuntimeNodeDef | undefined,
 ): void {
+	if (!nodeDefinition || typeof nodeDefinition.z !== "string" || typeof nodeDefinition.type !== "string") {
+		return;
+	}
 	const localAttributes = parseAttribute(
 		true,
 		msg,
-		nodeDefinition?.z as string,
-		nodeDefinition?.type as string,
+		nodeDefinition.z,
+		nodeDefinition.type,
 	);
 	if (localAttributes === undefined) {
 		return;
@@ -2340,13 +2341,10 @@ function hasActiveNonOrphanChildSpan(
 			attributes?: Record<string, unknown>;
 			_creationTimestamp?: number;
 		};
-		const childNodeType =
-			typeof childSpanExt.attributes?.[ATTR_NODE_TYPE] === "string"
-				? (childSpanExt.attributes[ATTR_NODE_TYPE] as string)
-				: undefined;
-		// Keep parent active when child span metadata is missing/unknown.
-		// This avoids cleanup crashes and prevents prematurely ending the parent span.
-		if (!childNodeType) {
+		const childNodeType = childSpanExt.attributes?.[ATTR_NODE_TYPE];
+		if (typeof childNodeType !== "string") {
+			// Keep parent active when child span metadata is missing/unknown.
+			// This avoids cleanup crashes and prevents prematurely ending the parent span.
 			return true;
 		}
 		if (
