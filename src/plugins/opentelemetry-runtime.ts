@@ -1593,7 +1593,7 @@ function getSubflowNameFromRuntimeNode(
 }
 
 function getSubflowIdFromType(nodeType: string | undefined): string | undefined {
-	if (!nodeType || !nodeType.startsWith("subflow:")) {
+	if (!nodeType?.startsWith("subflow:")) {
 		return undefined;
 	}
 	return nodeType.slice("subflow:".length) || undefined;
