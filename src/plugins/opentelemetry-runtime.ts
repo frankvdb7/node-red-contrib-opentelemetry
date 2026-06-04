@@ -1614,18 +1614,20 @@ function getSubflowNameFromRuntimeNode(
 	);
 }
 
-function getSubflowIdFromType(nodeType: string): string | undefined {
-	if (!nodeType.startsWith("subflow:")) {
+function getSubflowIdFromType(
+	nodeType: string | undefined,
+): string | undefined {
+	if (!nodeType || !nodeType.startsWith("subflow:")) {
 		return undefined;
 	}
 	return nodeType.slice("subflow:".length) || undefined;
 }
 
 function resolveSubflowNameById(
-	RED: RuntimeApi,
+	RED: RuntimeApi | undefined,
 	subflowId: string | undefined,
 ): string | undefined {
-	if (!RED.nodes || !subflowId) {
+	if (!RED?.nodes || !subflowId) {
 		return undefined;
 	}
 	const flowConfig = RED.nodes.getFlows?.();
@@ -1654,7 +1656,7 @@ function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
 
 function getSubflowNameFromType(
 	RED: RuntimeApi,
-	nodeType: string,
+	nodeType: string | undefined,
 ): string | undefined {
 	const subflowId = getSubflowIdFromType(nodeType);
 	return resolveSubflowNameById(RED, subflowId);
@@ -3058,6 +3060,7 @@ module.exports.__test__ = {
 		);
 	},
 	resolveSubflowNameById,
+	getSubflowNameFromType,
 	getContainingSubflow,
 	getFlowOrSubflowName,
 	maskUrlCredentials,

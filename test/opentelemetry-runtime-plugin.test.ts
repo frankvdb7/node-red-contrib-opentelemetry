@@ -71,6 +71,7 @@ const {
 	getSubflowIdFromType,
 	getSubflowEntryById,
 	resolveSubflowNameById,
+	getSubflowNameFromType,
 	getContainingSubflow,
 	getFlowOrSubflowName,
 	maskUrlCredentials,
@@ -4585,6 +4586,7 @@ test("isSubflowNodeType identifies subflow prefixed node types", () => {
 test("getSubflowIdFromType extracts ID from subflow type", () => {
 	assert.equal(getSubflowIdFromType("subflow:abc123"), "abc123");
 	assert.equal(getSubflowIdFromType("function"), undefined);
+	assert.equal(getSubflowIdFromType(undefined), undefined);
 });
 
 test("getSubflowEntryById and getContainingSubflow resolve subflow from flows config", () => {
@@ -4736,4 +4738,6 @@ test("resolveSubflowNameById resolves subflow name from config or node fallback"
 	assert.equal(resolveSubflowNameById(red, "f1"), undefined);
 	assert.equal(resolveSubflowNameById(red, "unknown"), undefined);
 	assert.equal(resolveSubflowNameById(red, undefined), undefined);
+	assert.equal(resolveSubflowNameById(undefined, "s1"), undefined);
+	assert.equal(getSubflowNameFromType(red, undefined), undefined);
 });
