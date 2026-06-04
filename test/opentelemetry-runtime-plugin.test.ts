@@ -2,7 +2,12 @@
 const Module = require("node:module");
 const path = require("node:path");
 const stubPath = path.join(process.cwd(), "test", "stubs", "node-red-util.cjs");
-const exporterStubPath = path.join(process.cwd(), "test", "stubs", "otel-exporters.cjs");
+const exporterStubPath = path.join(
+	process.cwd(),
+	"test",
+	"stubs",
+	"otel-exporters.cjs",
+);
 const originalResolveFilename = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, isMain, options) {
 	if (request === "@node-red/util") {
@@ -395,7 +400,9 @@ test("resolveOpenTelemetryConfig reads excludedNodeTypes from env variable", () 
 
 test("resolveOpenTelemetryConfig gives env excludedNodeTypes precedence over explicit", () => {
 	process.env.OTEL_EXCLUDED_NODE_TYPES = "debug,catch,inject";
-	const config = resolveOpenTelemetryConfig({ excludedNodeTypes: "debug,catch" });
+	const config = resolveOpenTelemetryConfig({
+		excludedNodeTypes: "debug,catch",
+	});
 	assert.equal(config.excludedNodeTypes, "debug,catch,inject");
 
 	const explicit = resolveOpenTelemetryConfig({
@@ -418,7 +425,9 @@ test("resolveOpenTelemetryConfig reads includedNodeTypes from env variable", () 
 
 test("resolveOpenTelemetryConfig gives env includedNodeTypes precedence over explicit", () => {
 	process.env.OTEL_INCLUDED_NODE_TYPES = "function,http request";
-	const config = resolveOpenTelemetryConfig({ includedNodeTypes: "inject,debug" });
+	const config = resolveOpenTelemetryConfig({
+		includedNodeTypes: "inject,debug",
+	});
 	assert.equal(config.includedNodeTypes, "function,http request");
 
 	const explicit = resolveOpenTelemetryConfig({
@@ -503,7 +512,10 @@ test("resolveOpenTelemetryConfig preserves existing endpoint paths", () => {
 		"http://logs-specific:4318/custom-logs";
 	const config = resolveOpenTelemetryConfig({});
 	assert.equal(config.url, "http://trace-specific:4318/custom-traces");
-	assert.equal(config.metricsUrl, "http://metrics-specific:4318/custom-metrics");
+	assert.equal(
+		config.metricsUrl,
+		"http://metrics-specific:4318/custom-metrics",
+	);
 	assert.equal(config.logsUrl, "http://logs-specific:4318/custom-logs");
 });
 
@@ -555,7 +567,10 @@ test("resolveOpenTelemetryConfig keeps explicit custom paths for node URLs", () 
 		logsUrl: "http://logs-explicit:4318/custom-logs",
 	});
 	assert.equal(config.url, "http://trace-explicit:4318/custom-traces");
-	assert.equal(config.metricsUrl, "http://metrics-explicit:4318/custom-metrics");
+	assert.equal(
+		config.metricsUrl,
+		"http://metrics-explicit:4318/custom-metrics",
+	);
 	assert.equal(config.logsUrl, "http://logs-explicit:4318/custom-logs");
 });
 
@@ -592,7 +607,10 @@ test("formatStartupConfigSummary masks credentials in endpoint URLs", () => {
 		timeout: 10,
 		attributeMappings: [],
 	});
-	assert.match(summary, /tracesUrl=http:\/\/user:\*\*\*@trace:4318\/v1\/traces/);
+	assert.match(
+		summary,
+		/tracesUrl=http:\/\/user:\*\*\*@trace:4318\/v1\/traces/,
+	);
 	assert.match(summary, /logsUrl=http:\/\/user:\*\*\*@logs:4318\/v1\/logs/);
 	assert.doesNotMatch(summary, /trace-secret|logs-secret/);
 });
@@ -736,7 +754,10 @@ test("logEvent forwards diagnostic debug logs to Node-RED even when plugin log l
 	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
 	logEvent(mockRed, {}, "test", { msg: { _msgid: "1" } });
 	assert.equal(logSpy.mock.calls.length, 1);
-	assert.equal(logSpy.mock.calls[0].arguments[0].level, nodeRedUtilStub.log.DEBUG);
+	assert.equal(
+		logSpy.mock.calls[0].arguments[0].level,
+		nodeRedUtilStub.log.DEBUG,
+	);
 });
 
 test("logEvent respects debug log level", () => {
@@ -755,7 +776,10 @@ test("logEvent forwards diagnostic debug logs to Node-RED when plugin log level 
 	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
 	logEvent(mockRed, {}, "test", { msg: { _msgid: "1" } });
 	assert.equal(logSpy.mock.calls.length, 1);
-	assert.equal(logSpy.mock.calls[0].arguments[0].level, nodeRedUtilStub.log.DEBUG);
+	assert.equal(
+		logSpy.mock.calls[0].arguments[0].level,
+		nodeRedUtilStub.log.DEBUG,
+	);
 });
 
 test("logEvent respects logLevel for structured OTel logs", () => {
@@ -857,7 +881,10 @@ test("logEvent ignores placeholder child spans that do not implement spanContext
 		logEvent(mockRed, {}, "test", { msg, node: { node: excludedNode } });
 	});
 	assert.ok(resolvedSpanContext);
-	assert.equal(resolvedSpanContext.traceId, parent.parentSpan.spanContext().traceId);
+	assert.equal(
+		resolvedSpanContext.traceId,
+		parent.parentSpan.spanContext().traceId,
+	);
 });
 
 test("logEvent falls back when child spanContext throws", () => {
@@ -891,7 +918,10 @@ test("logEvent falls back when child spanContext throws", () => {
 		logEvent(mockRed, {}, "test", { msg, node: { node: childNode } });
 	});
 	assert.ok(resolvedSpanContext);
-	assert.equal(resolvedSpanContext.traceId, parent.parentSpan.spanContext().traceId);
+	assert.equal(
+		resolvedSpanContext.traceId,
+		parent.parentSpan.spanContext().traceId,
+	);
 });
 
 test("createSpan should handle various node types correctly", () => {
@@ -1142,7 +1172,10 @@ test("nested subflow spans use LIFO parent context and unwind correctly", () => 
 		false,
 	);
 	const innerNodeCall = calls[calls.length - 1];
-	assert.equal(otelApi.trace.getSpan(innerNodeCall.parentContext), innerSubflowSpan);
+	assert.equal(
+		otelApi.trace.getSpan(innerNodeCall.parentContext),
+		innerSubflowSpan,
+	);
 
 	endSpan(redWithSubflow, msg, null, innerSubflowNode);
 
@@ -1160,12 +1193,14 @@ test("nested subflow spans use LIFO parent context and unwind correctly", () => 
 		false,
 	);
 	const outerNodeCall = calls[calls.length - 1];
-	assert.equal(otelApi.trace.getSpan(outerNodeCall.parentContext), outerSubflowSpan);
+	assert.equal(
+		otelApi.trace.getSpan(outerNodeCall.parentContext),
+		outerSubflowSpan,
+	);
 });
 
 test("carrier resolver selects HTTP req.headers for extraction", () => {
-	const traceparent =
-		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 	const msg = {
 		_msgid: "http-in-msg",
 		req: { headers: { traceparent }, method: "GET" },
@@ -1174,8 +1209,7 @@ test("carrier resolver selects HTTP req.headers for extraction", () => {
 });
 
 test("carrier resolver selects MQTT userProperties for extraction", () => {
-	const traceparent =
-		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+	const traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
 	const msg = {
 		_msgid: "mqtt-in-msg",
 		userProperties: { traceparent },
@@ -1184,8 +1218,7 @@ test("carrier resolver selects MQTT userProperties for extraction", () => {
 });
 
 test("carrier resolver selects AMQP properties.headers for extraction", () => {
-	const traceparent =
-		"00-11111111111111111111111111111111-2222222222222222-01";
+	const traceparent = "00-11111111111111111111111111111111-2222222222222222-01";
 	const msg = {
 		_msgid: "amqp-in-msg",
 		properties: { headers: { traceparent } },
@@ -1206,8 +1239,7 @@ test("carrier resolver covers amqp-in-manual-ack via same AMQP message shape", (
 });
 
 test("createSpan extracts configured trace-context alias as trace context", () => {
-	const traceparent =
-		"00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01";
+	const traceparent = "00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01";
 	const calls = [];
 	const tracer = {
 		startSpan: (name, options, parentContext) => {
@@ -1381,7 +1413,9 @@ test("resolvePropagationCarriers fallback preserves existing headers when recrea
 
 	assert.equal(Array.isArray(carriers), true);
 	assert.equal(
-		typeof msg.headers === "object" && msg.headers !== null && !Array.isArray(msg.headers),
+		typeof msg.headers === "object" &&
+			msg.headers !== null &&
+			!Array.isArray(msg.headers),
 		true,
 	);
 	assert.notEqual(msg.headers, headers);
@@ -1538,7 +1572,10 @@ test("endSpan should use msg.error for span status message when available", () =
 		(call) => call.arguments?.[0]?.code === 2,
 	);
 	assert.ok(errorStatusCall);
-	assert.match(String(errorStatusCall.arguments[0].message), /"reason":"bad payload"/);
+	assert.match(
+		String(errorStatusCall.arguments[0].message),
+		/"reason":"bad payload"/,
+	);
 });
 
 test("endSpan should prefer non-Error exception.message for span status message", () => {
@@ -1592,7 +1629,10 @@ test("endSpan should stringify non-Error exception when message is not a string"
 		(call) => call.arguments?.[0]?.code === 2,
 	);
 	assert.ok(errorStatusCall);
-	assert.match(String(errorStatusCall.arguments[0].message), /"reason":"bad payload"/);
+	assert.match(
+		String(errorStatusCall.arguments[0].message),
+		/"reason":"bad payload"/,
+	);
 });
 
 test("endSpan should continue cleanup when child span end throws", () => {
@@ -1648,7 +1688,6 @@ test("createSpan should handle websocket nodes correctly", () => {
 	assert.deepEqual(wsOutSpan.attributes["server.address"], "localhost");
 	assert.deepEqual(wsOutSpan.attributes["server.port"], "1880");
 	assert.deepEqual(wsOutSpan.attributes["url.scheme"], "ws");
-
 });
 
 test("createSpan websocket out should support relative serverConfig path", () => {
@@ -2052,7 +2091,10 @@ test("endSpan does not apply server response status for non-terminal custom node
 	endSpan(mockRed, msg, null, endNode);
 	assert.equal(endSpanRef.ended, true);
 	assert.equal(parentStatusSpy.mock.calls.length, 0);
-	assert.equal(parent.parentSpan.attributes["http.response.status_code"], undefined);
+	assert.equal(
+		parent.parentSpan.attributes["http.response.status_code"],
+		undefined,
+	);
 });
 
 test("endSpan applies response status to root span for terminal http response node", () => {
@@ -2250,7 +2292,8 @@ test("postDeliver.otel hook injects trace context into AMQP properties.headers",
 			properties: {
 				headers: {
 					existing: "keep",
-					traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
 				},
 			},
 		},
@@ -2261,7 +2304,10 @@ test("postDeliver.otel hook injects trace context into AMQP properties.headers",
 	assert.ok(sendEvent.msg.properties?.headers);
 	assert.equal(sendEvent.msg.properties?.headers.existing, "keep");
 	assert.ok(sendEvent.msg.properties?.headers.traceparent);
-	assert.equal(sendEvent.msg.properties?.headers["x-traceparent"], sendEvent.msg.properties?.headers.traceparent);
+	assert.equal(
+		sendEvent.msg.properties?.headers["x-traceparent"],
+		sendEvent.msg.properties?.headers.traceparent,
+	);
 	assert.notEqual(
 		sendEvent.msg.properties?.headers.traceparent,
 		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
@@ -2695,7 +2741,8 @@ test("preDeliver.otel hook clears all propagated trace headers safely", async ()
 				traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
 				tracestate: "vendor=value",
 				baggage: "k=v",
-				"x-traceparent": "00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01",
+				"x-traceparent":
+					"00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01",
 				"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
 				"x-b3-spanid": "e457b5a2e4d86bd1",
 				"x-b3-sampled": "1",
@@ -2740,8 +2787,7 @@ test("preDeliver.otel hook preserves Node-RED response header ignore marker afte
 		msg: {
 			headers: addNodeRedHttpRequestHeaderHash({
 				"content-length": "0",
-				traceparent:
-					"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+				traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
 			}),
 		},
 	};
@@ -2785,10 +2831,12 @@ test("preDeliver.otel hook clears propagated fields from AMQP properties.headers
 		msg: {
 			properties: {
 				headers: {
-					traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+					traceparent:
+						"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
 					tracestate: "vendor=value",
 					baggage: "k=v",
-					"x-traceparent": "00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01",
+					"x-traceparent":
+						"00-25800e6074324d4bed01afc3eae6886f-4060804c162f7495-01",
 					"x-b3-traceid": "80f198ee56343ba864fe8b2a57d3eff7",
 					"x-b3-spanid": "e457b5a2e4d86bd1",
 					"x-b3-sampled": "1",
@@ -2924,8 +2972,7 @@ test("preDeliver.otel hook skips frozen carriers without throwing", async () => 
 	assert.ok(preDeliverListener);
 
 	const frozenHeaders = Object.freeze({
-		traceparent:
-			"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+		traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
 		existing: "keep",
 	});
 	const sendEvent = {
@@ -3246,7 +3293,8 @@ test("postDeliver.otel allow-list is enforced per destination in fan-out", async
 	const httpTraceparent = msg.headers.traceparent;
 	assert.ok(httpTraceparent);
 
-	msg.headers.traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00";
+	msg.headers.traceparent =
+		"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00";
 	postDeliverListener({
 		msg,
 		source: { node: { id: "source-node", type: "function", z: "flow" } },
@@ -4128,7 +4176,10 @@ test("endSpan should not fail when remaining child span has missing attributes",
 
 	const parentAfterEnd = getMsgSpans().get("missing-attrs-msg");
 	assert.ok(parentAfterEnd);
-	assert.equal(parentAfterEnd.spans.has("missing-attrs-msg#function-node-b"), true);
+	assert.equal(
+		parentAfterEnd.spans.has("missing-attrs-msg#function-node-b"),
+		true,
+	);
 	assert.equal(
 		logSpy.mock.calls.some((call) =>
 			String(call.arguments?.[0]?.msg || "").includes(
@@ -4145,17 +4196,26 @@ test("pluginLog should use Node-RED log API when available", () => {
 	sharedState.nodeRedLogApi = nodeRedUtilStub.log;
 
 	setLogLevel("debug");
-	
+
 	pluginLog("info", "test info message");
 	assert.equal(logSpy.mock.calls.length, 1);
 	assert.equal(logSpy.mock.calls[0].arguments[0].msg, "test info message");
-	assert.equal(logSpy.mock.calls[0].arguments[0].level, nodeRedUtilStub.log.INFO);
+	assert.equal(
+		logSpy.mock.calls[0].arguments[0].level,
+		nodeRedUtilStub.log.INFO,
+	);
 
 	logSpy.mock.resetCalls();
 	pluginLog("error", "test error message", new Error("boom"));
 	assert.equal(logSpy.mock.calls.length, 1);
-	assert.match(logSpy.mock.calls[0].arguments[0].msg, /test error message Error: boom/);
-	assert.equal(logSpy.mock.calls[0].arguments[0].level, nodeRedUtilStub.log.ERROR);
+	assert.match(
+		logSpy.mock.calls[0].arguments[0].msg,
+		/test error message Error: boom/,
+	);
+	assert.equal(
+		logSpy.mock.calls[0].arguments[0].level,
+		nodeRedUtilStub.log.ERROR,
+	);
 });
 
 test("pluginLog should not apply plugin log-level filtering", () => {
@@ -4168,7 +4228,10 @@ test("pluginLog should not apply plugin log-level filtering", () => {
 
 	assert.equal(logSpy.mock.calls.length, 1);
 	assert.equal(logSpy.mock.calls[0].arguments[0].msg, "still forwarded");
-	assert.equal(logSpy.mock.calls[0].arguments[0].level, nodeRedUtilStub.log.INFO);
+	assert.equal(
+		logSpy.mock.calls[0].arguments[0].level,
+		nodeRedUtilStub.log.INFO,
+	);
 });
 
 test("pluginLog falls back to console logging when Node-RED log API is unavailable", () => {
@@ -4184,7 +4247,13 @@ test("pluginLog falls back to console logging when Node-RED log API is unavailab
 			if (request === "@node-red/util") {
 				throw new Error("forced missing @node-red/util");
 			}
-			return originalResolveFilename.call(this, request, parent, isMain, options);
+			return originalResolveFilename.call(
+				this,
+				request,
+				parent,
+				isMain,
+				options,
+			);
 		};
 		pluginLog("error", "console error message");
 		pluginLog("warn", "console warn message");
@@ -4219,7 +4288,13 @@ test("pluginLog console fallback includes error objects when provided", () => {
 			if (request === "@node-red/util") {
 				throw new Error("forced missing @node-red/util");
 			}
-			return originalResolveFilename.call(this, request, parent, isMain, options);
+			return originalResolveFilename.call(
+				this,
+				request,
+				parent,
+				isMain,
+				options,
+			);
 		};
 		pluginLog("error", "error with object", boom);
 		pluginLog("warn", "warn with object", boom);
@@ -4266,10 +4341,7 @@ test("resolveOpenTelemetryConfig ignores unsupported protocols", () => {
 
 test("ensureSignalPath handles parse failures and append modes", () => {
 	assert.equal(ensureSignalPath(undefined, "/v1/traces"), undefined);
-	assert.equal(
-		ensureSignalPath("://bad-url", "/v1/traces"),
-		"://bad-url",
-	);
+	assert.equal(ensureSignalPath("://bad-url", "/v1/traces"), "://bad-url");
 	assert.equal(
 		ensureSignalPath("http://localhost", "/v1/traces"),
 		"http://localhost/v1/traces",
@@ -4305,7 +4377,10 @@ test("ensureSignalPathFromGenericEndpoint remaps, appends, and handles invalid U
 		"http://localhost/custom/v1/logs",
 	);
 	assert.equal(
-		ensureSignalPathFromGenericEndpoint("http://localhost/custom/v1/logs", "/v1/logs"),
+		ensureSignalPathFromGenericEndpoint(
+			"http://localhost/custom/v1/logs",
+			"/v1/logs",
+		),
 		"http://localhost/custom/v1/logs",
 	);
 });
@@ -4392,11 +4467,26 @@ test("exporter env resolver handles defaults and precedence", () => {
 
 test("resolveNodeRedSeverity maps numeric and textual levels", () => {
 	const logApi = nodeRedUtilStub.log;
-	assert.equal(resolveNodeRedSeverity(logApi.FATAL, logApi).severityText, "FATAL");
-	assert.equal(resolveNodeRedSeverity(logApi.ERROR, logApi).severityText, "ERROR");
-	assert.equal(resolveNodeRedSeverity(logApi.WARN, logApi).severityText, "WARN");
-	assert.equal(resolveNodeRedSeverity(logApi.DEBUG, logApi).severityText, "DEBUG");
-	assert.equal(resolveNodeRedSeverity(logApi.TRACE, logApi).severityText, "TRACE");
+	assert.equal(
+		resolveNodeRedSeverity(logApi.FATAL, logApi).severityText,
+		"FATAL",
+	);
+	assert.equal(
+		resolveNodeRedSeverity(logApi.ERROR, logApi).severityText,
+		"ERROR",
+	);
+	assert.equal(
+		resolveNodeRedSeverity(logApi.WARN, logApi).severityText,
+		"WARN",
+	);
+	assert.equal(
+		resolveNodeRedSeverity(logApi.DEBUG, logApi).severityText,
+		"DEBUG",
+	);
+	assert.equal(
+		resolveNodeRedSeverity(logApi.TRACE, logApi).severityText,
+		"TRACE",
+	);
 	assert.equal(resolveNodeRedSeverity("warning", null).severityText, "WARN");
 	assert.equal(resolveNodeRedSeverity("audit", null).severityText, "INFO");
 	assert.equal(resolveNodeRedSeverity("metric", null).severityText, "INFO");
@@ -4449,12 +4539,31 @@ test("HTTP helper predicates and auto attributes handle mixed message shapes", (
 		},
 		res: { _res: { statusCode: 200, finished: true } },
 	};
-	const node = { id: "n1", type: "custom responder", z: "flow", method: "GET", url: "/orders" };
+	const node = {
+		id: "n1",
+		type: "custom responder",
+		z: "flow",
+		method: "GET",
+		url: "/orders",
+	};
 	assert.equal(hasHttpServerContext(msg, node), true);
 	assert.equal(hasHttpResponseContext(msg), true);
-	assert.equal(shouldHandleTerminalHttpResponse(msg, { id: "n2", type: "http response", z: "flow" }), true);
+	assert.equal(
+		shouldHandleTerminalHttpResponse(msg, {
+			id: "n2",
+			type: "http response",
+			z: "flow",
+		}),
+		true,
+	);
 	assert.equal(shouldHandleTerminalHttpResponse(msg, node), true);
-	assert.equal(shouldHandleTerminalHttpResponse({ req: {}, res: { _res: { finished: false } } }, node), false);
+	assert.equal(
+		shouldHandleTerminalHttpResponse(
+			{ req: {}, res: { _res: { finished: false } } },
+			node,
+		),
+		false,
+	);
 
 	const attrs = buildAutoSpanAttributes(msg, {
 		id: "http-req-node",
@@ -4510,9 +4619,7 @@ test("createSpan adds subflow attributes for node inside subflow", () => {
 		nodes: {
 			getNode: () => undefined,
 			getFlows: () => ({
-				flows: [
-					{ id: "subflow1", type: "subflow", name: "My Subflow" },
-				],
+				flows: [{ id: "subflow1", type: "subflow", name: "My Subflow" }],
 			}),
 		},
 	};
@@ -4559,9 +4666,7 @@ test("createSpan does not add subflow attributes for normal flow node", () => {
 		nodes: {
 			getNode: () => undefined,
 			getFlows: () => ({
-				flows: [
-					{ id: "flow1", type: "tab", label: "Main Flow" },
-				],
+				flows: [{ id: "flow1", type: "tab", label: "Main Flow" }],
 			}),
 		},
 	};
@@ -4598,7 +4703,8 @@ test("getContainingSubflow only resolves subflow types during fallback", () => {
 		nodes: {
 			getFlows: () => ({ flows: [] }),
 			getNode: (id) => {
-				if (id === "subflow-id") return { id, type: "subflow", name: "Correct" };
+				if (id === "subflow-id")
+					return { id, type: "subflow", name: "Correct" };
 				if (id === "flow-id") return { id, type: "tab", name: "Incorrect" };
 				return undefined;
 			},
