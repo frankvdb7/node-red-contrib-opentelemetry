@@ -65,7 +65,7 @@ const {
 	isSubflowNodeType,
 	getSubflowIdFromType,
 	getSubflowEntryById,
-	getSubflowNameById,
+	resolveSubflowNameById,
 	getContainingSubflow,
 	getFlowOrSubflowName,
 	maskUrlCredentials,
@@ -4612,7 +4612,7 @@ test("getContainingSubflow only resolves subflow types during fallback", () => {
 	assert.equal(flowRes, undefined);
 });
 
-test("getSubflowNameById resolves subflow name from config or node fallback", () => {
+test("resolveSubflowNameById resolves subflow name from config or node fallback", () => {
 	const red = {
 		nodes: {
 			getFlows: () => ({
@@ -4625,9 +4625,9 @@ test("getSubflowNameById resolves subflow name from config or node fallback", ()
 			},
 		},
 	};
-	assert.equal(getSubflowNameById(red, "s1"), "Subflow Label");
-	assert.equal(getSubflowNameById(red, "s2"), "Node Name");
-	assert.equal(getSubflowNameById(red, "f1"), undefined);
-	assert.equal(getSubflowNameById(red, "unknown"), undefined);
-	assert.equal(getSubflowNameById(red, undefined), undefined);
+	assert.equal(resolveSubflowNameById(red, "s1"), "Subflow Label");
+	assert.equal(resolveSubflowNameById(red, "s2"), "Node Name");
+	assert.equal(resolveSubflowNameById(red, "f1"), undefined);
+	assert.equal(resolveSubflowNameById(red, "unknown"), undefined);
+	assert.equal(resolveSubflowNameById(red, undefined), undefined);
 });
