@@ -1592,8 +1592,8 @@ function getSubflowNameFromRuntimeNode(
 	);
 }
 
-function getSubflowIdFromType(nodeType: string | undefined): string | undefined {
-	if (!nodeType?.startsWith("subflow:")) {
+function getSubflowIdFromType(nodeType: string): string | undefined {
+	if (!nodeType.startsWith("subflow:")) {
 		return undefined;
 	}
 	return nodeType.slice("subflow:".length) || undefined;
@@ -1603,7 +1603,7 @@ function resolveSubflowNameById(
 	RED: RuntimeApi,
 	subflowId: string | undefined,
 ): string | undefined {
-	if (!RED?.nodes || !subflowId) {
+	if (!RED.nodes || !subflowId) {
 		return undefined;
 	}
 	const flowConfig = RED.nodes.getFlows?.();
@@ -1619,8 +1619,8 @@ function resolveSubflowNameById(
 	return subflowDefinition?.type === "subflow" ? subflowDefinition.name : undefined;
 }
 
-function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef | undefined) {
-	const subflowId = nodeDefinition?.z;
+function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef) {
+	const subflowId = nodeDefinition.z;
 	const subflowName = resolveSubflowNameById(RED, subflowId);
 	if (subflowId && subflowName) {
 		return { id: subflowId, name: subflowName };
@@ -1630,7 +1630,7 @@ function getContainingSubflow(RED: RuntimeApi, nodeDefinition: RuntimeNodeDef | 
 
 function getSubflowNameFromType(
 	RED: RuntimeApi,
-	nodeType: string | undefined,
+	nodeType: string,
 ): string | undefined {
 	const subflowId = getSubflowIdFromType(nodeType);
 	return resolveSubflowNameById(RED, subflowId);
@@ -1638,24 +1638,24 @@ function getSubflowNameFromType(
 
 function getResolvedNodeName(
 	RED: RuntimeApi,
-	nodeDefinition: RuntimeNodeDef | undefined,
+	nodeDefinition: RuntimeNodeDef,
 ): string | undefined {
-	const nodeId = nodeDefinition?.id;
+	const nodeId = nodeDefinition.id;
 	const runtimeNode = nodeId
-		? (RED.nodes?.getNode?.(nodeId) as RuntimeRedNodeInstance | undefined)
+		? (RED.nodes.getNode?.(nodeId) as RuntimeRedNodeInstance | undefined)
 		: undefined;
-	const nodeType = nodeDefinition?.type;
-	if (nodeType && isSubflowNodeType(nodeType)) {
+	const nodeType = nodeDefinition.type;
+	if (isSubflowNodeType(nodeType)) {
 		return (
-			nodeDefinition?.name ||
+			nodeDefinition.name ||
 			getSubflowNameFromType(RED, nodeType) ||
 			getSubflowNameFromRuntimeNode(runtimeNode) ||
 			runtimeNode?.name
 		);
 	}
 	return (
-		nodeDefinition?.name ||
-		(nodeType ? getSubflowNameFromType(RED, nodeType) : undefined) ||
+		nodeDefinition.name ||
+		getSubflowNameFromType(RED, nodeType) ||
 		runtimeNode?.name
 	);
 }
