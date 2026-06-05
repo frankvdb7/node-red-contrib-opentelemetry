@@ -69,6 +69,8 @@ const ATTR_FLOW_ID = "node_red.flow.id";
 const ATTR_FLOW_NAME = "node_red.flow.name";
 const ATTR_SUBFLOW_ID = "node_red.subflow.id";
 const ATTR_SUBFLOW_NAME = "node_red.subflow.name";
+const ATTR_PARENT_FLOW_ID = "node_red.parent_flow.id";
+const ATTR_PARENT_FLOW_NAME = "node_red.parent_flow.name";
 const ATTR_NODE_ID = "node_red.node.id";
 const ATTR_NODE_TYPE = "node_red.node.type";
 const ATTR_NODE_NAME = "node_red.node.name";
@@ -1919,6 +1921,8 @@ function buildCommonAttributes(
 	flowName: string | undefined,
 	subflowId?: string,
 	subflowName?: string,
+	parentFlowId?: string,
+	parentFlowName?: string,
 ): Record<string, string | undefined> {
 	const commonAttributes: Record<string, string | undefined> = {
 		[ATTR_MSG_ID]: msgId,
@@ -1935,6 +1939,12 @@ function buildCommonAttributes(
 	}
 	if (subflowName) {
 		commonAttributes[ATTR_SUBFLOW_NAME] = subflowName;
+	}
+	if (parentFlowId) {
+		commonAttributes[ATTR_PARENT_FLOW_ID] = parentFlowId;
+	}
+	if (parentFlowName) {
+		commonAttributes[ATTR_PARENT_FLOW_NAME] = parentFlowName;
 	}
 	return commonAttributes;
 }
@@ -2079,6 +2089,8 @@ function createSpan(
 
 		let subflowId: string | undefined;
 		let subflowName: string | undefined;
+		let parentFlowId: string | undefined;
+		let parentFlowName: string | undefined;
 
 		const subflowIdFromType = getSubflowIdFromType(nodeDefinition.type);
 		if (subflowIdFromType) {
@@ -2086,6 +2098,10 @@ function createSpan(
 			subflowName =
 				resolveSubflowNameById(RED, subflowId) ||
 				getSubflowNameFromRuntimeNode(runtimeNode);
+			parentFlowId = nodeDefinition.z;
+			parentFlowName =
+				getFlowOrSubflowName(RED, nodeDefinition.z) ||
+				getFlowNameFromRuntimeNode(runtimeNode);
 		} else {
 			const containingSubflow = getContainingSubflow(RED, nodeDefinition);
 			if (containingSubflow) {
@@ -2103,6 +2119,8 @@ function createSpan(
 			flowName,
 			subflowId,
 			subflowName,
+			parentFlowId,
+			parentFlowName,
 		);
 		if (isNotTraced && !existingParent) {
 			pluginLog(
