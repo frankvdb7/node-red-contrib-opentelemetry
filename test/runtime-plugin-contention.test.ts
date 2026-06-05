@@ -3,7 +3,12 @@ const Module = require("node:module");
 const path = require("node:path");
 
 const stubPath = path.join(process.cwd(), "test", "stubs", "node-red-util.cjs");
-const exporterStubPath = path.join(process.cwd(), "test", "stubs", "otel-exporters.cjs");
+const exporterStubPath = path.join(
+	process.cwd(),
+	"test",
+	"stubs",
+	"otel-exporters.cjs",
+);
 const originalResolveFilename = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, isMain, options) {
 	if (request === "@node-red/util") {
@@ -63,12 +68,12 @@ test("OpenTelemetry runtime plugin contention: settings updates reuse hooks and 
 
 	await runtimePlugin.onSettings({
 		opentelemetry: {
-		url: "http://localhost:4318/v1/traces",
-		tracesEnabled: true,
-		metricsEnabled: false,
-		logsEnabled: false,
-		logLevel: "debug",
-		timeout: 10,
+			url: "http://localhost:4318/v1/traces",
+			tracesEnabled: true,
+			metricsEnabled: false,
+			logsEnabled: false,
+			logLevel: "debug",
+			timeout: 10,
 		},
 	});
 	await nextTick();
@@ -82,9 +87,9 @@ test("OpenTelemetry runtime plugin contention: settings updates reuse hooks and 
 
 	await runtimePlugin.onSettings({
 		opentelemetry: {
-		url: "http://localhost:4318/v1/traces",
-		logLevel: "warn",
-		timeout: 20,
+			url: "http://localhost:4318/v1/traces",
+			logLevel: "warn",
+			timeout: 20,
 		},
 	});
 	await nextTick();
@@ -101,5 +106,3 @@ test("OpenTelemetry runtime plugin contention: settings updates reuse hooks and 
 	assert.equal(sharedState.meterProvider, null);
 	assert.equal(sharedState.loggerProvider, null);
 });
-
-
