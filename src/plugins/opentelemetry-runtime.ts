@@ -2098,7 +2098,9 @@ function createSpan(
 			subflowName =
 				resolveSubflowNameById(RED, subflowId) ||
 				getSubflowNameFromRuntimeNode(runtimeNode);
-			parentFlowId = nodeDefinition.z;
+			parentFlowId =
+				nodeDefinition.z ||
+				(runtimeNode as RuntimeRedNodeInstance | undefined)?._flow?.id;
 			parentFlowName =
 				getFlowOrSubflowName(RED, nodeDefinition.z) ||
 				getFlowNameFromRuntimeNode(runtimeNode);

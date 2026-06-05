@@ -4790,6 +4790,40 @@ test("createSpan does not add parent flow attributes for normal flow node", () =
 	assert.equal(span.attributes["node_red.parent_flow.name"], undefined);
 });
 
+test("createSpan falls back to runtimeNode for parent flow metadata when nodeDefinition.z is missing", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "n7") {
+					return {
+						_flow: {
+							id: "flow2",
+							label: "Runtime Flow",
+						},
+					};
+				}
+				return undefined;
+			},
+			getFlows: () => ({
+				flows: [
+					{ id: "subflow_template", type: "subflow", name: "Template Name" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "m7" };
+	const node = { id: "n7", type: "subflow:subflow_template" }; // z is missing
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], "subflow_template");
+	assert.equal(span.attributes["node_red.parent_flow.id"], "flow2");
+	assert.equal(span.attributes["node_red.parent_flow.name"], "Runtime Flow");
+});
+
 test("createSpan does not add parent flow attributes for internal subflow node", () => {
 	const tracer = {
 		startSpan: (name, options) => createFakeSpan(name, options),
