@@ -1679,11 +1679,7 @@ function getResolvedNodeName(
 			runtimeNode?.name
 		);
 	}
-	return (
-		nodeDefinition.name ||
-		getSubflowNameFromType(RED, nodeType) ||
-		runtimeNode?.name
-	);
+	return nodeDefinition.name || runtimeNode?.name;
 }
 
 function isSubflowNodeType(nodeType: string | undefined): boolean {

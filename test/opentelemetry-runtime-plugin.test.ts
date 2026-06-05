@@ -4589,7 +4589,7 @@ test("getSubflowIdFromType extracts ID from subflow type", () => {
 	assert.equal(getSubflowIdFromType(undefined), undefined);
 });
 
-test("getSubflowEntryById and getContainingSubflow resolve subflow from flows config", () => {
+test("resolveSubflowNameById and getContainingSubflow resolve subflow from flows config", () => {
 	const red = {
 		nodes: {
 			getFlows: () => ({
