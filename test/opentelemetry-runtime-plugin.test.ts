@@ -4741,3 +4741,107 @@ test("resolveSubflowNameById resolves subflow name from config or node fallback"
 	assert.equal(resolveSubflowNameById(undefined, "s1"), undefined);
 	assert.equal(getSubflowNameFromType(red, undefined), undefined);
 });
+
+test("createSpan adds parent flow attributes for subflow instance node", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [
+					{ id: "flow1", type: "tab", label: "Main Flow" },
+					{ id: "subflow_template", type: "subflow", name: "Template Name" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "m4" };
+	const node = { id: "n4", type: "subflow:subflow_template", z: "flow1" };
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], "subflow_template");
+	assert.equal(span.attributes["node_red.subflow.name"], "Template Name");
+	assert.equal(span.attributes["node_red.parent_flow.id"], "flow1");
+	assert.equal(span.attributes["node_red.parent_flow.name"], "Main Flow");
+	assert.equal(span.attributes["node_red.flow.id"], "flow1");
+});
+
+test("createSpan does not add parent flow attributes for normal flow node", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [{ id: "flow1", type: "tab", label: "Main Flow" }],
+			}),
+		},
+	};
+	const msg = { _msgid: "m5" };
+	const node = { id: "n5", type: "function", z: "flow1" };
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.parent_flow.id"], undefined);
+	assert.equal(span.attributes["node_red.parent_flow.name"], undefined);
+});
+
+test("createSpan falls back to runtimeNode for parent flow metadata when nodeDefinition.z is missing", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: (id) => {
+				if (id === "n7") {
+					return {
+						_flow: {
+							id: "flow2",
+							label: "Runtime Flow",
+						},
+					};
+				}
+				return undefined;
+			},
+			getFlows: () => ({
+				flows: [
+					{ id: "subflow_template", type: "subflow", name: "Template Name" },
+				],
+			}),
+		},
+	};
+	const msg = { _msgid: "m7" };
+	const node = { id: "n7", type: "subflow:subflow_template" }; // z is missing
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], "subflow_template");
+	assert.equal(span.attributes["node_red.parent_flow.id"], "flow2");
+	assert.equal(span.attributes["node_red.parent_flow.name"], "Runtime Flow");
+});
+
+test("createSpan does not add parent flow attributes for internal subflow node", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const red = {
+		nodes: {
+			getNode: () => undefined,
+			getFlows: () => ({
+				flows: [{ id: "subflow1", type: "subflow", name: "My Subflow" }],
+			}),
+		},
+	};
+	const msg = { _msgid: "m6" };
+	const node = { id: "n6", type: "function", z: "subflow1" };
+
+	const span = createSpan(red, tracer, msg, node, {}, false);
+	assert.ok(span);
+	assert.equal(span.attributes["node_red.subflow.id"], "subflow1");
+	assert.equal(span.attributes["node_red.parent_flow.id"], undefined);
+	assert.equal(span.attributes["node_red.parent_flow.name"], undefined);
+});
