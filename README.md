@@ -17,6 +17,8 @@ Full OpenTelemetry support (tracing, metrics, logs) for Node-RED.
   - Automatically ends spans on `onComplete` and `postDeliver(source)` events.
 - Each trace includes:
   - Message ID, Flow ID, Node ID, Node Type, Node Name (if provided).
+  - Subflow ID and Subflow Name when the span represents a subflow instance or a node inside a subflow.
+  - Parent Flow ID and Parent Flow Name when the span represents a subflow instance.
   - Hostname.
   - HTTP status code (for `http request` and `http response` nodes).
   - Exception details and status.
