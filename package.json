@@ -58,7 +58,7 @@
 		"@types/node": "^25.6.0",
 		"@types/node-red__registry": "^1.3.11",
 		"@types/node-red__util": "^1.3.8",
-		"node-red": "^4.1.8",
+		"node-red": "^5.0.1",
 		"typescript": "^6.0.2"
 	},
 	"peerDependencies": {
