@@ -1,6 +1,6 @@
 {
 	"name": "@frankvdb/node-red-contrib-opentelemetry",
-	"version": "1.8.1",
+	"version": "1.9.0",
 	"description": "Full OpenTelemetry support (tracing, metrics, logs) for Node-RED",
 	"scripts": {
 		"lint": "biome lint .",
