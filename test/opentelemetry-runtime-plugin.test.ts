@@ -4845,3 +4845,455 @@ test("createSpan does not add parent flow attributes for internal subflow node",
 	assert.equal(span.attributes["node_red.parent_flow.id"], undefined);
 	assert.equal(span.attributes["node_red.parent_flow.name"], undefined);
 });
+
+for (const [protocol, generic, specific, expected] of [
+	[
+		"http",
+		"http://collector:4318/base",
+		undefined,
+		[
+			"http://collector:4318/base/v1/traces",
+			"http://collector:4318/base/v1/metrics",
+			"http://collector:4318/base/v1/logs",
+		],
+	],
+	[
+		"grpc",
+		"http://collector:4317/base",
+		undefined,
+		[
+			"http://collector:4317/base",
+			"http://collector:4317/base",
+			"http://collector:4317/base",
+		],
+	],
+	[
+		"http/protobuf",
+		"http://collector:4318/base",
+		"http://signal:4318/custom",
+		[
+			"http://signal:4318/custom",
+			"http://signal:4318/custom",
+			"http://signal:4318/custom",
+		],
+	],
+]) {
+	test(`characterization: config endpoint precedence for ${protocol}`, () => {
+		process.env.OTEL_EXPORTER_OTLP_PROTOCOL = protocol;
+		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = generic;
+		if (specific) {
+			for (const signal of ["TRACES", "METRICS", "LOGS"]) {
+				process.env[`OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`] = specific;
+			}
+		}
+		const result = resolveOpenTelemetryConfig({
+			url: "http://configured:4318/v1/traces",
+			metricsEnabled: false,
+			logsEnabled: false,
+		});
+		assert.deepEqual([result.url, result.metricsUrl, result.logsUrl], expected);
+		assert.equal(result.metricsEnabled, false);
+		assert.equal(result.logsEnabled, false);
+	});
+}
+
+test("characterization: config preserves explicit empty and false settings", () => {
+	process.env.OTEL_EXCLUDED_NODE_TYPES = "";
+	process.env.OTEL_LOG_LEVEL = "invalid";
+	const mappings = [{ key: "region", value: "region" }];
+	const result = resolveOpenTelemetryConfig(
+		{
+			logLevel: "debug",
+			tracesEnabled: false,
+			flowEventLogsEnabled: false,
+			rootPrefix: "",
+			timeout: 0,
+			excludedNodeTypes: "function",
+			includedNodeTypes: "",
+			propagateHeaderNodeTypes: "",
+			traceContextHeaderAliases: "",
+			attributeMappings: mappings,
+		},
+		{ logging: { console: { level: "warn" } } },
+	);
+	assert.equal(result.logLevel, "debug");
+	assert.equal(result.tracesEnabled, false);
+	assert.equal(result.flowEventLogsEnabled, false);
+	assert.equal(result.rootPrefix, "");
+	assert.equal(result.timeout, 0);
+	assert.equal(result.excludedNodeTypes, "");
+	assert.equal(result.includedNodeTypes, "");
+	assert.equal(result.propagateHeaderNodeTypes, "");
+	assert.equal(result.traceContextHeaderAliases, "");
+	assert.equal(result.attributeMappings, mappings);
+});
+
+for (const [logging, expected] of [
+	[
+		{
+			console: { level: "invalid" },
+			level: "fatal",
+			custom: { level: "trace" },
+		},
+		"error",
+	],
+	[{ console: { level: "off" }, level: "trace" }, "off"],
+	[
+		{
+			console: { level: "" },
+			level: "invalid",
+			first: { level: " WARN " },
+			second: { level: "debug" },
+		},
+		"warn",
+	],
+	[
+		{
+			console: null,
+			level: null,
+			ignored: "trace",
+			custom: { level: "DEBUG" },
+		},
+		"debug",
+	],
+]) {
+	test(`characterization: Node-RED logging precedence ${JSON.stringify(logging)}`, () => {
+		assert.equal(resolveNodeRedLogLevel({ logging }), expected);
+	});
+}
+
+test("characterization: severity preserves numeric and textual aliases and fallback", () => {
+	const cases = [
+		[10, "FATAL"],
+		[" 20 ", "ERROR"],
+		[30, "WARN"],
+		[40, "INFO"],
+		[50, "DEBUG"],
+		[60, "TRACE"],
+		[98, "INFO"],
+		[99, "INFO"],
+		[" WARNING ", "WARN"],
+		["fatal", "FATAL"],
+		[undefined, "INFO"],
+		[null, "INFO"],
+		[999, "INFO"],
+	];
+	for (const [level, severityText] of cases) {
+		assert.equal(
+			resolveNodeRedSeverity(level, nodeRedUtilStub.log).severityText,
+			severityText,
+		);
+	}
+	assert.equal(resolveNodeRedSeverity(10, null).severityText, "INFO");
+});
+
+test("characterization: diagnostic logs preserve severity and error body", () => {
+	const spy = test.mock.method(nodeRedUtilStub.log, "log", () => {});
+	try {
+		for (const level of ["error", "warn", "info", "debug", "trace"]) {
+			pluginLog(level, "diagnostic", { reason: "failed" });
+		}
+		assert.deepEqual(
+			spy.mock.calls.map((call) => call.arguments[0]),
+			[20, 30, 40, 50, 60].map((level) => ({
+				level,
+				msg: 'diagnostic {"reason":"failed"}',
+			})),
+		);
+	} finally {
+		spy.mock.restore();
+	}
+});
+
+test("characterization: automatic attributes preserve endpoint and message precedence", () => {
+	const result = buildAutoSpanAttributes(
+		{
+			req: {
+				method: "patch",
+				path: "/incoming",
+				ip: "client",
+				headers: { "x-forwarded-for": "proxy", "user-agent": "agent" },
+			},
+			topic: "orders",
+			queue: "queue",
+			routingKey: "",
+			routing_key: "fallback",
+			correlationId: 0,
+			correlation_id: "fallback",
+			partition: 0,
+			key: false,
+		},
+		{
+			id: "node",
+			type: "http request",
+			method: "GET",
+			serverConfig: { path: "https://api.example:8443/configured?q=1" },
+			url: "/ignored",
+		},
+	);
+	assert.deepEqual(result, {
+		"url.path": "/configured",
+		"server.address": "api.example",
+		"server.port": "8443",
+		"url.scheme": "https",
+		"http.request.method": "PATCH",
+		"client.address": "client",
+		"http.request.header.x-forwarded-for": "proxy",
+		"user_agent.original": "agent",
+		"node_red.msg.topic": "orders",
+		"node_red.msg.queue": "queue",
+		"node_red.msg.routing_key": "",
+		"node_red.msg.correlation_id": 0,
+		"node_red.msg.partition": 0,
+		"node_red.msg.key": false,
+	});
+});
+
+test("characterization: propagation keeps carrier order, identity and fallback mutations", () => {
+	const amqp = { existing: "amqp" };
+	const mqtt = { existing: "mqtt" };
+	const http = { existing: "http" };
+	const msg = {
+		properties: { headers: amqp },
+		userProperties: mqtt,
+		headers: http,
+	};
+	const carriers = resolvePropagationCarriers(msg);
+	assert.deepEqual(carriers, [amqp, mqtt, http]);
+	assert.equal(carriers[0], amqp);
+	assert.equal(carriers[1], mqtt);
+	assert.equal(carriers[2], http);
+	const frozen = Object.freeze({
+		properties: Object.freeze({ headers: Object.freeze({}) }),
+	});
+	assert.deepEqual(resolvePropagationCarriers(frozen), [{}]);
+	const malformed = { properties: { headers: 42 }, headers: false };
+	const created = resolvePropagationCarriers(malformed);
+	assert.equal(created[0], malformed.properties.headers);
+	assert.equal(created[1], malformed.headers);
+});
+
+test("characterization: propagation catches throwing carriers without mutating message", () => {
+	const msg = {
+		get properties() {
+			throw new Error("unreadable");
+		},
+	};
+	assert.deepEqual(resolvePropagationCarriers(msg), [{}]);
+	assert.equal(Object.hasOwn(msg, "headers"), false);
+});
+
+test("characterization: all transport span kinds remain stable", () => {
+	for (const [kind, types] of [
+		[otelApi.SpanKind.SERVER, ["http in", "tcp in", "udp in"]],
+		[otelApi.SpanKind.CLIENT, ["http request", "tcp request"]],
+		[
+			otelApi.SpanKind.CONSUMER,
+			["mqtt in", "amqp-in", "amqp-in-manual-ack", "websocket in"],
+		],
+		[otelApi.SpanKind.PRODUCER, ["mqtt out", "amqp-out", "websocket out"]],
+		[otelApi.SpanKind.INTERNAL, ["function", "HTTP IN", "toString", ""]],
+	]) {
+		for (const type of types) assert.equal(resolveSpanKind(type), kind);
+	}
+});
+
+test("characterization: subflow empty labels suppress runtime fallback", () => {
+	const getNode = test.mock.fn(() => ({ type: "subflow", name: "runtime" }));
+	const red = {
+		nodes: {
+			getNode,
+			getFlows: () => ({
+				flows: [
+					{ id: "template", type: "subflow", label: "", name: "configured" },
+				],
+			}),
+		},
+	};
+	assert.equal(resolveSubflowNameById(red, "template"), "");
+	assert.equal(getNode.mock.calls.length, 0);
+	assert.equal(resolveSubflowNameById(red, "missing"), "runtime");
+});
+
+test("characterization: node naming and span reuse preserve empty names", () => {
+	const started = [];
+	const tracer = {
+		startSpan: (name, options) => {
+			const span = createFakeSpan(name, options);
+			started.push(span);
+			return span;
+		},
+	};
+	const red = {
+		nodes: {
+			getNode: (id) =>
+				id === "node"
+					? { name: "", _flow: { name: "Runtime flow" } }
+					: undefined,
+		},
+	};
+	const node = { id: "node", type: "function", name: "", z: "flow" };
+	const msg = { _msgid: "naming" };
+	const span = createSpan(red, tracer, msg, node, null, false);
+	assert.equal(span.name, "");
+	assert.equal(createSpan(red, tracer, msg, node, null, false), undefined);
+	assert.equal(started.length, 2);
+	assert.equal(
+		getMsgSpans().get(msg._msgid).spans.get(getSpanId(msg, node)),
+		span,
+	);
+});
+
+test("characterization: flow log uses event node over destination and source for attributes and context", () => {
+	const tracer = {
+		startSpan: (name, options) => createFakeSpan(name, options),
+	};
+	const msg = { _msgid: "logging", z: "flow" };
+	const source = { id: "source", type: "inject", z: "flow" };
+	const destination = { id: "destination", type: "function", z: "flow" };
+	const current = { id: "current", type: "debug", z: "flow" };
+	createSpan(mockRed, tracer, msg, source, null, false);
+	const currentSpan = createSpan(mockRed, tracer, msg, current, null, false);
+	const emit = test.mock.fn();
+	getSharedState().logger = { emit };
+	setLogLevel("info");
+	logEvent(mockRed, null, "event", {
+		msg,
+		source: { node: source },
+		destination: { node: destination },
+		node: { node: current },
+	});
+	assert.equal(emit.mock.calls.length, 1);
+	const record = emit.mock.calls[0].arguments[0];
+	assert.equal(
+		record.body,
+		"event: rootMsgId: logging, _msgId: logging: src: inject source >> dest: function destination ## node: debug current",
+	);
+	assert.equal(record.attributes["node_red.node.id"], "current");
+	assert.equal(record.attributes["node_red.destination.id"], "destination");
+	assert.equal(record.attributes["node_red.flow.name"], "Flow flow");
+	assert.deepEqual(
+		otelApi.trace.getSpanContext(record.context),
+		currentSpan.spanContext(),
+	);
+});
+
+for (const [statusCode, error, expectedStatus] of [
+	[199, null, undefined],
+	[200, null, otelApi.SpanStatusCode.OK],
+	[299, null, otelApi.SpanStatusCode.OK],
+	[300, null, undefined],
+	[399, null, undefined],
+	[400, null, otelApi.SpanStatusCode.ERROR],
+	[500, null, otelApi.SpanStatusCode.ERROR],
+	[204, new Error("failure"), otelApi.SpanStatusCode.ERROR],
+]) {
+	test(`characterization: terminal HTTP ${statusCode} preserves status and metrics${error ? " on error" : ""}`, () => {
+		const tracer = {
+			startSpan: (name, options) => createFakeSpan(name, options),
+		};
+		const node = { id: "response", type: "http response", z: "flow" };
+		const msg = {
+			_msgid: "http",
+			otelStartTime: Date.now() - 20,
+			req: { method: "POST", path: "/orders" },
+			res: { _res: { statusCode } },
+		};
+		const span = createSpan(mockRed, tracer, msg, node, null, false);
+		const parent = getMsgSpans().get(msg._msgid).parentSpan;
+		const childStatus = test.mock.method(span, "setStatus");
+		const parentStatus = test.mock.method(parent, "setStatus");
+		const record = test.mock.fn();
+		getSharedState().metrics.requestDuration = { record };
+		endSpan(mockRed, msg, error, node);
+		assert.equal(span.ended, true);
+		assert.equal(parent.ended, true);
+		assert.equal(span.attributes["http.response.status_code"], statusCode);
+		assert.equal(parent.attributes["http.response.status_code"], statusCode);
+		assert.equal(
+			childStatus.mock.calls.at(-1)?.arguments[0].code,
+			expectedStatus,
+		);
+		assert.equal(
+			parentStatus.mock.calls.at(-1)?.arguments[0].code,
+			expectedStatus,
+		);
+		assert.deepEqual(record.mock.calls[0].arguments[1], {
+			"http.response.status_code": statusCode,
+			"http.request.method": "POST",
+			"url.path": "/orders",
+		});
+		assert.equal(
+			otelApi.trace.getSpan(record.mock.calls[0].arguments[2]),
+			parent,
+		);
+		assert.equal(msg.otelHttpMetricsRecorded, true);
+		endSpan(mockRed, msg, null, node);
+		assert.equal(record.mock.calls.length, 1);
+	});
+}
+
+test("characterization: cleanup expires only old spans and continues after end throws", () => {
+	const now = Date.now();
+	test.mock.method(Date, "now", () => now);
+	setTimeoutMs(100);
+	const old = createFakeSpan("old");
+	const fresh = createFakeSpan("fresh");
+	test.mock.method(old, "end", () => {
+		throw new Error("end failed");
+	});
+	getMsgSpans().set("old", {
+		parentSpan: old,
+		spans: new Map(),
+		updateTimestamp: now - 101,
+	});
+	getMsgSpans().set("boundary", {
+		parentSpan: fresh,
+		spans: new Map(),
+		updateTimestamp: now - 100,
+	});
+	deleteOutdatedMsgSpans();
+	assert.equal(getMsgSpans().has("old"), false);
+	assert.equal(getMsgSpans().has("boundary"), true);
+	assert.equal(fresh.ended, false);
+});
+
+for (const sourceType of ["switch", "subflow:template", "subflow custom"]) {
+	test(`characterization: postDeliver ends ${sourceType} after creating destination span`, async () => {
+		const { runtimePlugin, mockRed: red } = createPluginHarness(true);
+		await runtimePlugin.onSettings({
+			opentelemetry: { propagateHeaderNodeTypes: "function" },
+		});
+		try {
+			const msg = { _msgid: "handoff" };
+			const source = { id: "source", type: sourceType, z: "flow" };
+			const destination = { id: "destination", type: "function", z: "flow" };
+			const sourceSpan = createSpan(
+				red,
+				getSharedState().tracer,
+				msg,
+				source,
+				null,
+				false,
+			);
+			const end = test.mock.method(sourceSpan, "end");
+			red.hooks.listeners["postDeliver.otel"]({
+				msg,
+				source: { node: source },
+				destination: { node: destination },
+			});
+			assert.equal(end.mock.calls.length, 1);
+			assert.equal(
+				getMsgSpans().get(msg._msgid).spans.has(getSpanId(msg, source)),
+				false,
+			);
+			assert.equal(
+				getMsgSpans().get(msg._msgid).spans.has(getSpanId(msg, destination)),
+				true,
+			);
+			assert.ok(msg.headers.traceparent);
+		} finally {
+			await runtimePlugin.onClose();
+		}
+	});
+}
