@@ -32,14 +32,17 @@ jobs:
         run: npm ci
       - name: lint
         run: npm run lint
-      - uses: fallow-rs/fallow@v3
-        with:
-          command: audit
       - name: build
         run: npm run build --if-present
       - name: test
         run: npm run test:cov
         env:
           CI: true
+          NODE_OPTIONS: --enable-source-maps
+          NODE_V8_COVERAGE: ${{ runner.temp }}/fallow-coverage
+      - uses: fallow-rs/fallow@v3
+        with:
+          command: audit
+          coverage: ${{ runner.temp }}/fallow-coverage
       - name: pack-check
         run: npm run pack:check
