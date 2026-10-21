@@ -1,8 +1,9 @@
 {
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
-		"outDir": "./dist-tests",
+		"outDir": "./dist/tests",
 		"rootDir": ".",
+		"sourceMap": true,
 		"strict": false,
 		"noImplicitAny": false
 	},

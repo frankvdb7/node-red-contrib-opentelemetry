@@ -521,41 +521,37 @@ function resolveLogLevel(value: string | undefined): LogLevel | undefined {
 	}
 }
 
-function resolveNodeRedLogLevel(settings: unknown): LogLevel | undefined {
-	if (!settings || typeof settings !== "object") {
-		return undefined;
-	}
-	const logging = (settings as { logging?: unknown }).logging;
-	if (!logging || typeof logging !== "object") {
-		return undefined;
-	}
-	const loggingRecord = logging as Record<string, unknown>;
-	const candidateLevels: unknown[] = [
-		(loggingRecord.console as { level?: unknown } | undefined)?.level,
-		loggingRecord.level,
+function collectNodeRedLogLevels(logging: Record<string, unknown>): unknown[] {
+	const levels: unknown[] = [
+		(logging.console as { level?: unknown } | undefined)?.level,
+		logging.level,
 	];
-	for (const [key, value] of Object.entries(loggingRecord)) {
-		if (key === "console" || key === "level") {
-			continue;
-		}
-		if (value && typeof value === "object") {
-			candidateLevels.push((value as { level?: unknown }).level);
+	for (const [key, value] of Object.entries(logging)) {
+		if (
+			key !== "console" &&
+			key !== "level" &&
+			value &&
+			typeof value === "object"
+		) {
+			levels.push((value as { level?: unknown }).level);
 		}
 	}
-	for (const levelValue of candidateLevels) {
-		const normalized = String(levelValue ?? "")
+	return levels;
+}
+
+function resolveNodeRedLogLevel(settings: unknown): LogLevel | undefined {
+	if (!settings || typeof settings !== "object") return undefined;
+	const logging = (settings as { logging?: unknown }).logging;
+	if (!logging || typeof logging !== "object") return undefined;
+	for (const level of collectNodeRedLogLevels(
+		logging as Record<string, unknown>,
+	)) {
+		const normalized = String(level ?? "")
 			.trim()
 			.toLowerCase();
-		if (!normalized) {
-			continue;
-		}
-		if (normalized === "fatal") {
-			return "error";
-		}
+		if (normalized === "fatal") return "error";
 		const resolved = resolveLogLevel(normalized);
-		if (resolved) {
-			return resolved;
-		}
+		if (resolved) return resolved;
 	}
 	return undefined;
 }
@@ -611,6 +607,35 @@ function shouldLog(requiredLevel: LogLevel): boolean {
 	);
 }
 
+const CONSOLE_LOG_METHODS = new Map<string, "error" | "warn" | "log">([
+	["error", "error"],
+	["warn", "warn"],
+	["info", "log"],
+	["debug", "log"],
+	["trace", "log"],
+]);
+const NODE_RED_LOG_KEYS = new Map<
+	string,
+	"ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE"
+>([
+	["error", "ERROR"],
+	["warn", "WARN"],
+	["info", "INFO"],
+	["debug", "DEBUG"],
+	["trace", "TRACE"],
+]);
+
+function logToConsole(
+	level: Exclude<LogLevel, "off">,
+	message: string,
+	error: unknown,
+): void {
+	const method = CONSOLE_LOG_METHODS.get(level);
+	if (!method) return;
+	if (error !== undefined) console[method](message, error);
+	else console[method](message);
+}
+
 function pluginLog(
 	level: Exclude<LogLevel, "off">,
 	message: string,
@@ -619,51 +644,12 @@ function pluginLog(
 	const logApi = getNodeRedUtilLogApi();
 	const body =
 		error !== undefined ? `${message} ${stringifyLogBody(error)}` : message;
-	if (logApi) {
-		switch (level) {
-			case "error":
-				logApi.log({ level: logApi.ERROR, msg: body });
-				break;
-			case "warn":
-				logApi.log({ level: logApi.WARN, msg: body });
-				break;
-			case "info":
-				logApi.log({ level: logApi.INFO, msg: body });
-				break;
-			case "debug":
-				logApi.log({ level: logApi.DEBUG, msg: body });
-				break;
-			case "trace":
-				logApi.log({ level: logApi.TRACE, msg: body });
-				break;
-		}
+	if (!logApi) {
+		logToConsole(level, message, error);
 		return;
 	}
-	switch (level) {
-		case "error":
-			if (error !== undefined) {
-				console.error(message, error);
-			} else {
-				console.error(message);
-			}
-			break;
-		case "warn":
-			if (error !== undefined) {
-				console.warn(message, error);
-			} else {
-				console.warn(message);
-			}
-			break;
-		case "info":
-		case "debug":
-		case "trace":
-			if (error !== undefined) {
-				console.log(message, error);
-			} else {
-				console.log(message);
-			}
-			break;
-	}
+	const key = NODE_RED_LOG_KEYS.get(level);
+	if (key !== undefined) logApi.log({ level: logApi[key], msg: body });
 }
 
 function stringifyLogBody(value: unknown): string {
@@ -699,6 +685,22 @@ function getNodeRedUtilLogApi(): NodeRedUtilLogApi | null {
 	return null;
 }
 
+const NODE_RED_SEVERITIES = [
+	"FATAL",
+	"ERROR",
+	"WARN",
+	"DEBUG",
+	"TRACE",
+] as const;
+const TEXT_SEVERITIES = new Map<string, SeverityNumber>([
+	["fatal", SeverityNumber.FATAL],
+	["error", SeverityNumber.ERROR],
+	["warn", SeverityNumber.WARN],
+	["warning", SeverityNumber.WARN],
+	["debug", SeverityNumber.DEBUG],
+	["trace", SeverityNumber.TRACE],
+]);
+
 function resolveNodeRedSeverity(
 	level: unknown,
 	logApi: NodeRedUtilLogApi | null,
@@ -708,43 +710,21 @@ function resolveNodeRedSeverity(
 			typeof level === "string" && /^\d+$/u.test(level.trim())
 				? Number(level)
 				: level;
-		if (numericLevel === logApi.FATAL) {
-			return { severityNumber: SeverityNumber.FATAL, severityText: "FATAL" };
-		}
-		if (numericLevel === logApi.ERROR) {
-			return { severityNumber: SeverityNumber.ERROR, severityText: "ERROR" };
-		}
-		if (numericLevel === logApi.WARN) {
-			return { severityNumber: SeverityNumber.WARN, severityText: "WARN" };
-		}
-		if (numericLevel === logApi.DEBUG) {
-			return { severityNumber: SeverityNumber.DEBUG, severityText: "DEBUG" };
-		}
-		if (numericLevel === logApi.TRACE) {
-			return { severityNumber: SeverityNumber.TRACE, severityText: "TRACE" };
-		}
+		const numericSeverity = NODE_RED_SEVERITIES.find(
+			(severity) => numericLevel === logApi[severity],
+		);
+		if (numericSeverity)
+			return {
+				severityNumber: SeverityNumber[numericSeverity],
+				severityText: numericSeverity,
+			};
 	}
 	const normalizedLevel = String(level ?? "")
 		.trim()
 		.toLowerCase();
-	switch (normalizedLevel) {
-		case "fatal":
-			return { severityNumber: SeverityNumber.FATAL, severityText: "FATAL" };
-		case "error":
-			return { severityNumber: SeverityNumber.ERROR, severityText: "ERROR" };
-		case "warn":
-		case "warning":
-			return { severityNumber: SeverityNumber.WARN, severityText: "WARN" };
-		case "debug":
-			return { severityNumber: SeverityNumber.DEBUG, severityText: "DEBUG" };
-		case "trace":
-			return { severityNumber: SeverityNumber.TRACE, severityText: "TRACE" };
-		case "audit":
-		case "metric":
-		case "info":
-		default:
-			return { severityNumber: SeverityNumber.INFO, severityText: "INFO" };
-	}
+	const severityNumber =
+		TEXT_SEVERITIES.get(normalizedLevel) ?? SeverityNumber.INFO;
+	return { severityNumber, severityText: SeverityNumber[severityNumber] };
 }
 
 function emitNodeRedRuntimeLog(entry: NodeRedLogEntry): void {
@@ -882,165 +862,163 @@ function formatStartupConfigSummary(config: ResolvedOTELConfig): string {
 	].join(", ");
 }
 
+type TelemetrySignal = "traces" | "metrics" | "logs";
+type TelemetryProtocol = ResolvedOTELConfig["tracesProtocol"];
+const SIGNAL_DEFAULT_URLS = {
+	traces: DEFAULT_OTEL_TRACE_URL,
+	metrics: DEFAULT_OTEL_METRICS_URL,
+	logs: DEFAULT_OTEL_LOGS_URL,
+};
+
+function signalEnvironmentValue(
+	signal: TelemetrySignal,
+	field: "ENDPOINT" | "PROTOCOL",
+): string | undefined {
+	return process.env[`OTEL_EXPORTER_OTLP_${signal.toUpperCase()}_${field}`];
+}
+
+function configuredSignalEndpoint(
+	config: OTELConfig,
+	signal: TelemetrySignal,
+): string | undefined {
+	if (signal === "traces") return config.url || undefined;
+	return config[`${signal}Url`] || undefined;
+}
+
+function configuredSignalHttpUrl(
+	config: OTELConfig,
+	signal: TelemetrySignal,
+): string | undefined {
+	const endpoint = configuredSignalEndpoint(config, signal);
+	const path = `/v1/${signal}` as const;
+	if (endpoint) return ensureSignalPath(endpoint, path);
+	if (config.url) return ensureSignalPathFromGenericEndpoint(config.url, path);
+	return ensureSignalPath(SIGNAL_DEFAULT_URLS[signal], path);
+}
+
+function configuredSignalUrl(
+	config: OTELConfig,
+	signal: TelemetrySignal,
+	protocol: TelemetryProtocol,
+): string | undefined {
+	// Evaluate the HTTP URL even for gRPC, matching configuration validation order.
+	const httpUrl = configuredSignalHttpUrl(config, signal);
+	if (protocol !== "grpc") return httpUrl;
+	const endpoint = configuredSignalEndpoint(config, signal);
+	return (
+		normalizeGrpcEndpoint(endpoint ?? (config.url || undefined)) ||
+		DEFAULT_OTEL_GRPC_URL
+	);
+}
+
+function resolveSignalConfig(
+	config: OTELConfig,
+	signal: TelemetrySignal,
+): { url: string | undefined; protocol: TelemetryProtocol } {
+	const envProtocol =
+		signalEnvironmentValue(signal, "PROTOCOL") ||
+		process.env.OTEL_EXPORTER_OTLP_PROTOCOL;
+	const configuredProtocol =
+		resolveProtocol(config.protocol || DEFAULT_OTEL_PROTOCOL) || "http";
+	const protocol = resolveProtocol(envProtocol) || configuredProtocol;
+	const specificEndpoint = signalEnvironmentValue(signal, "ENDPOINT");
+	const genericEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+	const selectedEndpoint = specificEndpoint || genericEndpoint;
+	const configuredUrl = configuredSignalUrl(config, signal, protocol);
+	if (!selectedEndpoint) return { url: configuredUrl, protocol };
+	const url =
+		protocol === "grpc"
+			? selectedEndpoint
+			: ensureSignalPath(
+					selectedEndpoint,
+					`/v1/${signal}`,
+					Boolean(!specificEndpoint && genericEndpoint),
+				);
+	return { url, protocol };
+}
+
+function resolveSignalEnabled(
+	signal: TelemetrySignal,
+	configured: boolean | undefined,
+): boolean {
+	const fromEnvironment = resolveSignalEnabledFromEnv(
+		process.env[`OTEL_${signal.toUpperCase()}_EXPORTER`],
+	);
+	const defaultEnabled =
+		signal === "traces" ||
+		Boolean(
+			signalEnvironmentValue(signal, "ENDPOINT") ||
+				process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+		);
+	return fromEnvironment ?? configured ?? defaultEnabled;
+}
+
+function resolveRuntimeString(
+	environmentKey: string,
+	configured: string | undefined,
+	fallback: string,
+): string {
+	return process.env[environmentKey] ?? configured ?? fallback;
+}
+
+function resolveRuntimeLogLevel(
+	config: OTELConfig,
+	nodeRedSettings: unknown,
+): LogLevel {
+	const nodeRedLogLevel = resolveNodeRedLogLevel(nodeRedSettings);
+	return (
+		resolveLogLevel(process.env.OTEL_LOG_LEVEL) ||
+		resolveLogLevel(config.logLevel) ||
+		nodeRedLogLevel ||
+		DEFAULT_LOG_LEVEL
+	);
+}
+
 function resolveOpenTelemetryConfig(
 	config: OTELConfig,
 	nodeRedSettings?: unknown,
 ): ResolvedOTELConfig {
-	const env = process.env;
-	const tracesEndpoint = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
-	const metricsEndpoint = env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
-	const logsEndpoint = env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT;
-	const genericEndpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT;
-	const tracesProtocolEnv = env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL;
-	const metricsProtocolEnv = env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL;
-	const logsProtocolEnv = env.OTEL_EXPORTER_OTLP_LOGS_PROTOCOL;
-	const genericProtocol = env.OTEL_EXPORTER_OTLP_PROTOCOL;
-	const serviceNameEnv = env.OTEL_SERVICE_NAME;
-	const logLevelEnv = env.OTEL_LOG_LEVEL;
-	const excludedNodeTypesEnv = env.OTEL_EXCLUDED_NODE_TYPES;
-	const includedNodeTypesEnv = env.OTEL_INCLUDED_NODE_TYPES;
-	const propagateHeaderNodeTypesEnv = env.OTEL_PROPAGATE_HEADER_NODE_TYPES;
-	const traceContextHeaderAliasesEnv = env.OTEL_TRACE_CONTEXT_HEADER_ALIASES;
-	const tracesExporterEnv = env.OTEL_TRACES_EXPORTER;
-	const metricsExporterEnv = env.OTEL_METRICS_EXPORTER;
-	const logsExporterEnv = env.OTEL_LOGS_EXPORTER;
-
-	const resolvedTracesProtocol = resolveProtocol(
-		tracesProtocolEnv || genericProtocol,
-	);
-	const resolvedMetricsProtocol = resolveProtocol(
-		metricsProtocolEnv || genericProtocol,
-	);
-	const resolvedLogsProtocol = resolveProtocol(
-		logsProtocolEnv || genericProtocol,
-	);
-
-	const selectedTraceEndpoint = tracesEndpoint || genericEndpoint || undefined;
-	const selectedMetricsEndpoint =
-		metricsEndpoint || genericEndpoint || undefined;
-	const selectedLogsEndpoint = logsEndpoint || genericEndpoint || undefined;
-
-	const isTraceGenericEndpoint = Boolean(!tracesEndpoint && genericEndpoint);
-	const isMetricsGenericEndpoint = Boolean(!metricsEndpoint && genericEndpoint);
-	const isLogsGenericEndpoint = Boolean(!logsEndpoint && genericEndpoint);
-
-	const configuredProtocol =
-		resolveProtocol(config.protocol || DEFAULT_OTEL_PROTOCOL) || "http";
-	const tracesProtocol = resolvedTracesProtocol || configuredProtocol;
-	const metricsProtocol = resolvedMetricsProtocol || configuredProtocol;
-	const logsProtocol = resolvedLogsProtocol || configuredProtocol;
-	const nodeRedLogLevel = resolveNodeRedLogLevel(nodeRedSettings);
-	const configuredLogLevel =
-		resolveLogLevel(logLevelEnv) ||
-		resolveLogLevel(config.logLevel) ||
-		nodeRedLogLevel ||
-		DEFAULT_LOG_LEVEL;
-	const configuredGenericEndpoint = config.url || undefined;
-	const configuredMetricsEndpoint = config.metricsUrl || undefined;
-	const configuredLogsEndpoint = config.logsUrl || undefined;
-	const configuredTraceUrl = ensureSignalPath(
-		configuredGenericEndpoint || DEFAULT_OTEL_TRACE_URL,
-		"/v1/traces",
-	);
-	const configuredMetricsUrl = configuredMetricsEndpoint
-		? ensureSignalPath(configuredMetricsEndpoint, "/v1/metrics")
-		: configuredGenericEndpoint
-			? ensureSignalPathFromGenericEndpoint(
-					configuredGenericEndpoint,
-					"/v1/metrics",
-				)
-			: ensureSignalPath(DEFAULT_OTEL_METRICS_URL, "/v1/metrics");
-	const configuredLogsUrl = configuredLogsEndpoint
-		? ensureSignalPath(configuredLogsEndpoint, "/v1/logs")
-		: configuredGenericEndpoint
-			? ensureSignalPathFromGenericEndpoint(
-					configuredGenericEndpoint,
-					"/v1/logs",
-				)
-			: ensureSignalPath(DEFAULT_OTEL_LOGS_URL, "/v1/logs");
-	const tracesEnabledFromEnv = resolveSignalEnabledFromEnv(tracesExporterEnv);
-	const metricsEnabledFromEnv = resolveSignalEnabledFromEnv(metricsExporterEnv);
-	const logsEnabledFromEnv = resolveSignalEnabledFromEnv(logsExporterEnv);
-	const hasMetricsOtlpEnvConfig = Boolean(selectedMetricsEndpoint);
-	const hasLogsOtlpEnvConfig = Boolean(selectedLogsEndpoint);
-	const configuredTraceEndpointForProtocol =
-		tracesProtocol === "grpc"
-			? normalizeGrpcEndpoint(configuredGenericEndpoint) ||
-				DEFAULT_OTEL_GRPC_URL
-			: configuredTraceUrl;
-	const configuredMetricsEndpointForProtocol =
-		metricsProtocol === "grpc"
-			? normalizeGrpcEndpoint(
-					configuredMetricsEndpoint ?? configuredGenericEndpoint,
-				) || DEFAULT_OTEL_GRPC_URL
-			: configuredMetricsUrl;
-	const configuredLogsEndpointForProtocol =
-		logsProtocol === "grpc"
-			? normalizeGrpcEndpoint(
-					configuredLogsEndpoint ?? configuredGenericEndpoint,
-				) || DEFAULT_OTEL_GRPC_URL
-			: configuredLogsUrl;
-
+	const traces = resolveSignalConfig(config, "traces");
+	const metrics = resolveSignalConfig(config, "metrics");
+	const logs = resolveSignalConfig(config, "logs");
 	return {
-		url: selectedTraceEndpoint
-			? tracesProtocol === "grpc"
-				? selectedTraceEndpoint
-				: ensureSignalPath(
-						selectedTraceEndpoint,
-						"/v1/traces",
-						isTraceGenericEndpoint,
-					)
-			: configuredTraceEndpointForProtocol,
-		metricsUrl: selectedMetricsEndpoint
-			? metricsProtocol === "grpc"
-				? selectedMetricsEndpoint
-				: ensureSignalPath(
-						selectedMetricsEndpoint,
-						"/v1/metrics",
-						isMetricsGenericEndpoint,
-					)
-			: configuredMetricsEndpointForProtocol,
-		logsUrl: selectedLogsEndpoint
-			? logsProtocol === "grpc"
-				? selectedLogsEndpoint
-				: ensureSignalPath(
-						selectedLogsEndpoint,
-						"/v1/logs",
-						isLogsGenericEndpoint,
-					)
-			: configuredLogsEndpointForProtocol,
-		protocol: tracesProtocol,
-		tracesProtocol,
-		metricsProtocol,
-		logsProtocol,
+		url: traces.url,
+		metricsUrl: metrics.url,
+		logsUrl: logs.url,
+		protocol: traces.protocol,
+		tracesProtocol: traces.protocol,
+		metricsProtocol: metrics.protocol,
+		logsProtocol: logs.protocol,
 		serviceName:
-			serviceNameEnv || config.serviceName || DEFAULT_OTEL_SERVICE_NAME,
-		tracesEnabled: tracesEnabledFromEnv ?? config.tracesEnabled ?? true,
-		metricsEnabled:
-			metricsEnabledFromEnv ??
-			config.metricsEnabled ??
-			(hasMetricsOtlpEnvConfig ? true : false),
-		logsEnabled:
-			logsEnabledFromEnv ??
-			config.logsEnabled ??
-			(hasLogsOtlpEnvConfig ? true : false),
+			process.env.OTEL_SERVICE_NAME ||
+			config.serviceName ||
+			DEFAULT_OTEL_SERVICE_NAME,
+		tracesEnabled: resolveSignalEnabled("traces", config.tracesEnabled),
+		metricsEnabled: resolveSignalEnabled("metrics", config.metricsEnabled),
+		logsEnabled: resolveSignalEnabled("logs", config.logsEnabled),
 		flowEventLogsEnabled: config.flowEventLogsEnabled ?? true,
 		rootPrefix: config.rootPrefix ?? DEFAULT_ROOT_SPAN_NAME_PREFIX,
-		excludedNodeTypes:
-			excludedNodeTypesEnv ??
-			config.excludedNodeTypes ??
+		excludedNodeTypes: resolveRuntimeString(
+			"OTEL_EXCLUDED_NODE_TYPES",
+			config.excludedNodeTypes,
 			DEFAULT_EXCLUDED_NODE_TYPES,
-		includedNodeTypes:
-			includedNodeTypesEnv ??
-			config.includedNodeTypes ??
+		),
+		includedNodeTypes: resolveRuntimeString(
+			"OTEL_INCLUDED_NODE_TYPES",
+			config.includedNodeTypes,
 			DEFAULT_INCLUDED_NODE_TYPES,
-		propagateHeaderNodeTypes:
-			propagateHeaderNodeTypesEnv ??
-			config.propagateHeaderNodeTypes ??
+		),
+		propagateHeaderNodeTypes: resolveRuntimeString(
+			"OTEL_PROPAGATE_HEADER_NODE_TYPES",
+			config.propagateHeaderNodeTypes,
 			DEFAULT_PROPAGATE_HEADER_NODE_TYPES,
-		traceContextHeaderAliases:
-			traceContextHeaderAliasesEnv ?? config.traceContextHeaderAliases ?? "",
-		logLevel: configuredLogLevel,
+		),
+		traceContextHeaderAliases: resolveRuntimeString(
+			"OTEL_TRACE_CONTEXT_HEADER_ALIASES",
+			config.traceContextHeaderAliases,
+			"",
+		),
+		logLevel: resolveRuntimeLogLevel(config, nodeRedSettings),
 		timeout: config.timeout ?? DEFAULT_TIMEOUT_SECONDS,
 		attributeMappings: config.attributeMappings ?? [],
 	};
@@ -1113,44 +1091,63 @@ function extractEndpointFromNode(
 	return undefined;
 }
 
-function buildAutoSpanAttributes(
+type AutoSpanAttributes = Record<string, string | number | boolean | undefined>;
+
+function addEndpointAttributes(
+	attributes: AutoSpanAttributes,
+	endpoint: string | undefined,
+): void {
+	if (!endpoint) return;
+	const parsedUrl = parseNodeUrl(endpoint);
+	if (!parsedUrl) {
+		attributes[ATTR_URL_PATH] = endpoint;
+		return;
+	}
+	attributes[ATTR_URL_PATH] = parsedUrl.url.pathname;
+	if (parsedUrl.isAbsolute) {
+		attributes[ATTR_SERVER_ADDRESS] = parsedUrl.url.hostname;
+		attributes[ATTR_SERVER_PORT] = parsedUrl.url.port;
+		attributes[ATTR_URL_SCHEME] = parsedUrl.url.protocol.replace(":", "");
+	}
+}
+
+function addRequestAttributes(
+	attributes: AutoSpanAttributes,
 	msg: RuntimeMessage,
 	nodeDefinition: RuntimeNodeDef,
-): Record<string, string | number | boolean | undefined> {
-	const attributes: Record<string, string | number | boolean | undefined> = {};
-	const endpoint = extractEndpointFromNode(nodeDefinition);
-	if (endpoint) {
-		const parsedUrl = parseNodeUrl(endpoint);
-		if (parsedUrl) {
-			attributes[ATTR_URL_PATH] = parsedUrl.url.pathname;
-			if (parsedUrl.isAbsolute) {
-				attributes[ATTR_SERVER_ADDRESS] = parsedUrl.url.hostname;
-				attributes[ATTR_SERVER_PORT] = parsedUrl.url.port;
-				attributes[ATTR_URL_SCHEME] = parsedUrl.url.protocol.replace(":", "");
-			}
-		} else {
-			attributes[ATTR_URL_PATH] = endpoint;
-		}
-	}
-
+): void {
 	const incomingMethod = msg.req?.method ?? nodeDefinition.method;
-	if (incomingMethod) {
+	if (incomingMethod)
 		attributes[ATTR_HTTP_REQUEST_METHOD] = String(incomingMethod).toUpperCase();
-	}
-	if (msg.req?.path && !attributes[ATTR_URL_PATH]) {
+	if (msg.req?.path && !attributes[ATTR_URL_PATH])
 		attributes[ATTR_URL_PATH] = msg.req.path;
-	}
 	setAttributeIfPrimitive(attributes, ATTR_CLIENT_ADDRESS, msg.req?.ip);
+	addRequestHeaderAttributes(attributes, msg.req?.headers);
+}
+
+function addRequestHeaderAttributes(
+	attributes: AutoSpanAttributes,
+	headers: RuntimeRequest["headers"] | undefined,
+): void {
 	setAttributeIfPrimitive(
 		attributes,
 		ATTR_HTTP_REQUEST_HEADER("x-forwarded-for"),
-		msg.req?.headers?.["x-forwarded-for"],
+		headers?.["x-forwarded-for"],
 	);
 	setAttributeIfPrimitive(
 		attributes,
 		ATTR_USER_AGENT_ORIGINAL,
-		msg.req?.headers?.["user-agent"],
+		headers?.["user-agent"],
 	);
+}
+
+function buildAutoSpanAttributes(
+	msg: RuntimeMessage,
+	nodeDefinition: RuntimeNodeDef,
+): AutoSpanAttributes {
+	const attributes: AutoSpanAttributes = {};
+	addEndpointAttributes(attributes, extractEndpointFromNode(nodeDefinition));
+	addRequestAttributes(attributes, msg, nodeDefinition);
 	setAttributeIfPrimitive(attributes, "node_red.msg.topic", msg.topic);
 	setAttributeIfPrimitive(attributes, "node_red.msg.queue", msg.queue);
 	setAttributeIfPrimitive(
@@ -1439,83 +1436,70 @@ function resolvePropagationCarrier(msg: RuntimeMessage): TextMapCarrier {
 	return carriers[0];
 }
 
-function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
-	if (!isTextMapCarrier(msg)) {
-		return [{}];
+function ensureHeadersCarrier(msg: RuntimeMessage): TextMapCarrier | undefined {
+	const headersAdapter = PROPAGATION_CARRIER_ADAPTERS.at(-1);
+	if (!headersAdapter?.ensureCarrier || !Object.isExtensible(msg))
+		return undefined;
+	return headersAdapter.ensureCarrier(msg);
+}
+
+function appendHeadersCarrier(
+	carriers: TextMapCarrier[],
+	msg: RuntimeMessage,
+): void {
+	const headers = ensureHeadersCarrier(msg);
+	if (headers && Object.isExtensible(headers) && !carriers.includes(headers))
+		carriers.push(headers);
+}
+
+function canEnsureCarrier(
+	adapter: CarrierAdapter,
+	msg: RuntimeMessage,
+): boolean {
+	if (!adapter.ensureCarrier) return false;
+	if (
+		adapter === PROPAGATION_CARRIER_ADAPTERS[0] &&
+		!Object.isExtensible(msg.properties ?? {})
+	)
+		return false;
+	if (
+		adapter === PROPAGATION_CARRIER_ADAPTERS.at(-1) &&
+		!Object.isExtensible(msg)
+	)
+		return false;
+	return true;
+}
+
+function createPropagationCarrier(
+	msg: RuntimeMessage,
+): TextMapCarrier | undefined {
+	for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
+		if (!canEnsureCarrier(adapter, msg)) continue;
+		const carrier = adapter.ensureCarrier?.(msg);
+		if (carrier) return carrier;
 	}
+	return undefined;
+}
+
+function fallbackPropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
+	if (!Object.isExtensible(msg)) return [{}];
+	msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
+	return [msg.headers as TextMapCarrier];
+}
+
+function resolvePropagationCarriers(msg: RuntimeMessage): TextMapCarrier[] {
+	if (!isTextMapCarrier(msg)) return [{}];
 	try {
-		const existingCarriers = listPropagationCarriers(msg);
-		const ensureHeadersCarrier = (): TextMapCarrier | undefined => {
-			const headersAdapter = PROPAGATION_CARRIER_ADAPTERS.at(-1);
-			if (!headersAdapter?.ensureCarrier || !Object.isExtensible(msg)) {
-				return undefined;
-			}
-			return headersAdapter.ensureCarrier(msg);
-		};
-		if (existingCarriers.length > 0) {
-			const headersCarrier = ensureHeadersCarrier();
-			if (
-				headersCarrier &&
-				Object.isExtensible(headersCarrier) &&
-				!existingCarriers.includes(headersCarrier)
-			) {
-				existingCarriers.push(headersCarrier);
-			}
-			return existingCarriers;
+		const existing = listPropagationCarriers(msg);
+		if (existing.length > 0) {
+			appendHeadersCarrier(existing, msg);
+			return existing;
 		}
-		let createdCarrier: TextMapCarrier | undefined;
-		for (const adapter of PROPAGATION_CARRIER_ADAPTERS) {
-			if (!adapter.ensureCarrier) {
-				continue;
-			}
-			// Only call ensureCarrier when its specific mutation target can be extended.
-			// This avoids expected TypeErrors for frozen/non-extensible message shapes.
-			if (
-				adapter === PROPAGATION_CARRIER_ADAPTERS[0] &&
-				!Object.isExtensible(msg.properties ?? {})
-			) {
-				continue;
-			}
-			if (
-				adapter === PROPAGATION_CARRIER_ADAPTERS.at(-1) &&
-				!Object.isExtensible(msg)
-			) {
-				continue;
-			}
-			createdCarrier = adapter.ensureCarrier(msg);
-			if (createdCarrier) {
-				break;
-			}
-		}
-		if (!createdCarrier) {
-			// Absolute fallback for malformed message shapes.
-			if (Object.isExtensible(msg)) {
-				msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
-				return [msg.headers as TextMapCarrier];
-			}
-			return [{}];
-		}
-		const createdCarriers: TextMapCarrier[] = Object.isExtensible(
-			createdCarrier,
-		)
-			? [createdCarrier]
-			: [];
-		const headersCarrier = ensureHeadersCarrier();
-		if (
-			headersCarrier &&
-			Object.isExtensible(headersCarrier) &&
-			!createdCarriers.includes(headersCarrier)
-		) {
-			createdCarriers.push(headersCarrier);
-		}
-		if (createdCarriers.length === 0) {
-			if (Object.isExtensible(msg)) {
-				msg.headers = isTextMapCarrier(msg.headers) ? { ...msg.headers } : {};
-				return [msg.headers as TextMapCarrier];
-			}
-			return [{}];
-		}
-		return createdCarriers;
+		const created = createPropagationCarrier(msg);
+		if (!created) return fallbackPropagationCarriers(msg);
+		const carriers = Object.isExtensible(created) ? [created] : [];
+		appendHeadersCarrier(carriers, msg);
+		return carriers.length > 0 ? carriers : fallbackPropagationCarriers(msg);
 	} catch (error) {
 		pluginLog(
 			"warn",
@@ -1625,20 +1609,20 @@ function getSubflowIdFromType(
 	return nodeType.slice("subflow:".length) || undefined;
 }
 
+function findConfiguredSubflow(RED: RuntimeApi, subflowId: string) {
+	const flowConfig = RED.nodes.getFlows?.();
+	return flowConfig?.flows?.find(
+		(entry) => entry.type === "subflow" && entry.id === subflowId,
+	);
+}
+
 function resolveSubflowNameById(
 	RED: RuntimeApi | undefined,
 	subflowId: string | undefined,
 ): string | undefined {
-	if (!RED?.nodes || !subflowId) {
-		return undefined;
-	}
-	const flowConfig = RED.nodes.getFlows?.();
-	const subflowEntry = flowConfig?.flows?.find(
-		(entry) => entry.type === "subflow" && entry.id === subflowId,
-	);
-	if (subflowEntry) {
-		return subflowEntry.label ?? subflowEntry.name;
-	}
+	if (!RED?.nodes || !subflowId) return undefined;
+	const subflowEntry = findConfiguredSubflow(RED, subflowId);
+	if (subflowEntry) return subflowEntry.label ?? subflowEntry.name;
 	const subflowDefinition = RED.nodes.getNode?.(subflowId) as
 		| RuntimeRedNodeInstance
 		| undefined;
@@ -1664,23 +1648,37 @@ function getSubflowNameFromType(
 	return resolveSubflowNameById(RED, subflowId);
 }
 
+function getRuntimeNode(
+	RED: RuntimeApi,
+	nodeId: string,
+): RuntimeRedNodeInstance | undefined {
+	return RED.nodes?.getNode?.(nodeId) as RuntimeRedNodeInstance | undefined;
+}
+
+function resolveSubflowInstanceName(
+	RED: RuntimeApi,
+	nodeDefinition: RuntimeNodeDef,
+	runtimeNode: RuntimeRedNodeInstance | undefined,
+): string | undefined {
+	return (
+		nodeDefinition.name ||
+		getSubflowNameFromType(RED, nodeDefinition.type) ||
+		getSubflowNameFromRuntimeNode(runtimeNode) ||
+		runtimeNode?.name
+	);
+}
+
 function getResolvedNodeName(
 	RED: RuntimeApi,
 	nodeDefinition: RuntimeNodeDef,
 ): string | undefined {
-	const nodeId = nodeDefinition.id;
-	const runtimeNode = nodeId
-		? (RED.nodes.getNode?.(nodeId) as RuntimeRedNodeInstance | undefined)
+	const runtimeNode = nodeDefinition.id
+		? (RED.nodes.getNode?.(nodeDefinition.id) as
+				| RuntimeRedNodeInstance
+				| undefined)
 		: undefined;
-	const nodeType = nodeDefinition.type;
-	if (isSubflowNodeType(nodeType)) {
-		return (
-			nodeDefinition.name ||
-			getSubflowNameFromType(RED, nodeType) ||
-			getSubflowNameFromRuntimeNode(runtimeNode) ||
-			runtimeNode?.name
-		);
-	}
+	if (isSubflowNodeType(nodeDefinition.type))
+		return resolveSubflowInstanceName(RED, nodeDefinition, runtimeNode);
 	return nodeDefinition.name || runtimeNode?.name;
 }
 
@@ -1691,13 +1689,79 @@ function isSubflowNodeType(nodeType: string | undefined): boolean {
 	return nodeType.startsWith("subflow:");
 }
 
-/**
- * @param {RuntimeApi} RED Node-RED runtime object
- * @param {NodeDef | null} node OTEL node (for using Node-RED utilities)
- * @param {string} eventType
- * @param {RuntimeHookEvent} event
- * @returns
- */
+function formatFlowLogMessage(
+	msgId: string,
+	originalMsgId: string,
+	event: RuntimeHookEvent,
+): string {
+	let message = `rootMsgId: ${msgId}, _msgId: ${originalMsgId}:`;
+	if (event.source?.node)
+		message += ` src: ${event.source.node.type} ${event.source.node.id}`;
+	if (event.destination?.node)
+		message += ` >> dest: ${event.destination.node.type} ${event.destination.node.id}`;
+	if (event.node?.node)
+		message += ` ## node: ${event.node.node.type} ${event.node.node.id}`;
+	return message;
+}
+
+function resolveFlowLogSpan(
+	msgId: string,
+	msg: RuntimeMessage,
+	spanNode: RuntimeNodeDef | undefined,
+): { candidate: Span | undefined; parentSpan: Span | undefined } {
+	const parent = msgSpans.get(msgId);
+	const parentSpan = parent?.parentSpan;
+	const candidate =
+		spanNode && parent
+			? parent.spans.get(getSpanId(msg, spanNode)) || parentSpan
+			: parentSpan;
+	return { candidate, parentSpan };
+}
+
+function resolveFlowLogContext(
+	msgId: string,
+	msg: RuntimeMessage,
+	event: RuntimeHookEvent,
+): Context {
+	const spanNode =
+		event.node?.node || event.destination?.node || event.source?.node;
+	const { candidate, parentSpan } = resolveFlowLogSpan(msgId, msg, spanNode);
+	const spanContext =
+		resolveSafeSpanContext(candidate) ??
+		(candidate === parentSpan ? undefined : resolveSafeSpanContext(parentSpan));
+	return spanContext
+		? trace.setSpanContext(context.active(), spanContext)
+		: context.active();
+}
+
+function buildFlowLogAttributes(
+	msgId: string,
+	originalMsgId: string,
+	event: RuntimeHookEvent,
+	eventType: string,
+	flowName: string | undefined,
+): Record<string, string> {
+	const attributes: Record<string, string> = {
+		[ATTR_MSG_ID]: msgId,
+		"node_red.msg._msgid": originalMsgId,
+		"node_red.event_type": eventType,
+	};
+	if (flowName) attributes[ATTR_FLOW_NAME] = flowName;
+	if (event.source?.node) {
+		attributes[ATTR_NODE_ID] = event.source.node.id;
+		attributes[ATTR_NODE_TYPE] = event.source.node.type;
+	}
+	if (event.destination?.node) {
+		attributes["node_red.destination.id"] = event.destination.node.id;
+		attributes["node_red.destination.type"] = event.destination.node.type;
+	}
+	if (event.node?.node) {
+		attributes[ATTR_NODE_ID] = event.node.node.id;
+		attributes[ATTR_NODE_TYPE] = event.node.node.type;
+	}
+	return attributes;
+}
+
 /**
  * @param {RuntimeApi} RED Node-RED runtime object
  * @param {NodeDef | null} node OTEL node (for using Node-RED utilities)
@@ -1711,92 +1775,63 @@ function logEvent(
 	eventType: string,
 	event: RuntimeHookEvent,
 ): void {
-	if (!event.msg) {
-		return;
-	}
-	// Structured OTel logs follow the logs signal enablement (logger presence),
-	// while logLevel controls plugin diagnostics written to Node-RED log or console.
-	// We also respect logLevel for OTel logs to avoid flooding the backend.
+	if (!event.msg) return;
 	const emitOtelLogger =
 		sharedState.logger && sharedState.flowEventLogsEnabled && shouldLog("info");
-
-	// Diagnostic logging to Node-RED/console is delegated to Node-RED log settings in pluginLog.
-	// We call it at 'debug' level for flow events.
 	const msgId = getMsgId(event.msg);
-	const _msgId = event.msg._msgid;
+	const originalMsgId = event.msg._msgid;
 	const flowName = event.msg.z
 		? getFlowOrSubflowName(RED, event.msg.z)
 		: undefined;
-	let logMsg = `rootMsgId: ${msgId}, _msgId: ${_msgId}:`;
-
-	if (event.source?.node) {
-		logMsg += ` src: ${event.source.node.type} ${event.source.node.id}`;
-	}
-	if (event.destination?.node) {
-		logMsg += ` >> dest: ${event.destination.node.type} ${event.destination.node.id}`;
-	}
-	if (event.node?.node) {
-		logMsg += ` ## node: ${event.node.node.type} ${event.node.node.id}`;
-	}
-
-	pluginLog("debug", `${eventType}: ${logMsg}`);
-
-	if (!emitOtelLogger) {
-		return;
-	}
-
+	const body = `${eventType}: ${formatFlowLogMessage(msgId, originalMsgId, event)}`;
+	pluginLog("debug", body);
+	if (!emitOtelLogger) return;
 	try {
-		const parent = msgSpans.get(msgId);
-		const parentSpan = parent?.parentSpan;
-		const spanNode =
-			event.node?.node || event.destination?.node || event.source?.node;
-		const candidateSpanForLog =
-			spanNode && parent
-				? parent.spans.get(getSpanId(event.msg, spanNode)) || parentSpan
-				: parentSpan;
-		const candidateSpanContext = resolveSafeSpanContext(candidateSpanForLog);
-		const spanContextForLog =
-			candidateSpanContext ??
-			(candidateSpanForLog === parentSpan
-				? undefined
-				: resolveSafeSpanContext(parentSpan));
-		const emitContext = spanContextForLog
-			? trace.setSpanContext(context.active(), spanContextForLog)
-			: context.active();
-		const attributes: Record<string, string> = {
-			[ATTR_MSG_ID]: msgId,
-			"node_red.msg._msgid": _msgId,
-			"node_red.event_type": eventType,
-		};
-		if (flowName) {
-			attributes[ATTR_FLOW_NAME] = flowName;
-		}
-
-		if (event.source?.node) {
-			attributes[ATTR_NODE_ID] = event.source.node.id;
-			attributes[ATTR_NODE_TYPE] = event.source.node.type;
-		}
-		if (event.destination?.node) {
-			attributes["node_red.destination.id"] = event.destination.node.id;
-			attributes["node_red.destination.type"] = event.destination.node.type;
-		}
-		if (event.node?.node) {
-			attributes[ATTR_NODE_ID] = event.node.node.id;
-			attributes[ATTR_NODE_TYPE] = event.node.node.type;
-		}
-
-		if (sharedState.logger) {
-			sharedState.logger.emit({
-				severityNumber: SeverityNumber.INFO,
-				severityText: "INFO",
-				body: `${eventType}: ${logMsg}`,
-				attributes,
-				context: emitContext,
-			});
-		}
+		const emitContext = resolveFlowLogContext(msgId, event.msg, event);
+		const attributes = buildFlowLogAttributes(
+			msgId,
+			originalMsgId,
+			event,
+			eventType,
+			flowName,
+		);
+		sharedState.logger?.emit({
+			severityNumber: SeverityNumber.INFO,
+			severityText: "INFO",
+			body,
+			attributes,
+			context: emitContext,
+		});
 	} catch (error) {
 		pluginLog("error", `An error occurred during logging ${eventType}`, error);
 	}
+}
+
+function expireCompletedMessages(
+	completed: Map<string, number>,
+	now: number,
+): void {
+	for (const [msgId, recordedTimestamp] of completed) {
+		if (recordedTimestamp < now - sharedState.timeout) completed.delete(msgId);
+	}
+}
+
+function endOutdatedParentSpan(
+	msgId: string,
+	msgSpan: MessageSpanRecord,
+): void {
+	pluginLog(
+		"debug",
+		`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
+	);
+	try {
+		msgSpan.parentSpan.end(msgSpan.updateTimestamp);
+	} catch (error) {
+		pluginLog("warn", "Failed to end outdated parent span", error);
+	}
+	msgSpans.delete(msgId);
+	completedHttpMetricsMsgIds.delete(msgId);
+	completedHttpResponseMsgIds.delete(msgId);
 }
 
 /**
@@ -1805,32 +1840,11 @@ function logEvent(
 function deleteOutdatedMsgSpans(): void {
 	const now = Date.now();
 	try {
-		for (const [msgId, recordedTimestamp] of completedHttpMetricsMsgIds) {
-			if (recordedTimestamp < now - sharedState.timeout) {
-				completedHttpMetricsMsgIds.delete(msgId);
-			}
-		}
-		for (const [msgId, recordedTimestamp] of completedHttpResponseMsgIds) {
-			if (recordedTimestamp < now - sharedState.timeout) {
-				completedHttpResponseMsgIds.delete(msgId);
-			}
-		}
+		expireCompletedMessages(completedHttpMetricsMsgIds, now);
+		expireCompletedMessages(completedHttpResponseMsgIds, now);
 		for (const [msgId, msgSpan] of msgSpans) {
-			if (msgSpan.updateTimestamp < now - sharedState.timeout) {
-				// ending parent span and remove it
-				pluginLog(
-					"debug",
-					`Parent span "${(msgSpan.parentSpan as Span & OTelSpanExtension).name ?? ""}" ${msgId} is outdated, ending`,
-				);
-				try {
-					msgSpan.parentSpan.end(msgSpan.updateTimestamp);
-				} catch (error) {
-					pluginLog("warn", "Failed to end outdated parent span", error);
-				}
-				msgSpans.delete(msgId);
-				completedHttpMetricsMsgIds.delete(msgId);
-				completedHttpResponseMsgIds.delete(msgId);
-			}
+			if (msgSpan.updateTimestamp < now - sharedState.timeout)
+				endOutdatedParentSpan(msgId, msgSpan);
 		}
 	} catch (error) {
 		pluginLog("error", "An error occurred during span cleaning", error);
@@ -1891,27 +1905,23 @@ function parseAttribute(
 	return attributes;
 }
 
+const SPAN_KINDS = new Map<string, SpanKind>([
+	["http in", SpanKind.SERVER],
+	["tcp in", SpanKind.SERVER],
+	["udp in", SpanKind.SERVER],
+	["http request", SpanKind.CLIENT],
+	["tcp request", SpanKind.CLIENT],
+	["mqtt in", SpanKind.CONSUMER],
+	["amqp-in", SpanKind.CONSUMER],
+	["amqp-in-manual-ack", SpanKind.CONSUMER],
+	["websocket in", SpanKind.CONSUMER],
+	["mqtt out", SpanKind.PRODUCER],
+	["amqp-out", SpanKind.PRODUCER],
+	["websocket out", SpanKind.PRODUCER],
+]);
+
 function resolveSpanKind(nodeType: string): SpanKind {
-	switch (nodeType) {
-		case "http in":
-		case "tcp in":
-		case "udp in":
-			return SpanKind.SERVER;
-		case "http request":
-		case "tcp request":
-			return SpanKind.CLIENT;
-		case "mqtt in":
-		case "amqp-in":
-		case "amqp-in-manual-ack":
-		case "websocket in":
-			return SpanKind.CONSUMER;
-		case "mqtt out":
-		case "amqp-out":
-		case "websocket out":
-			return SpanKind.PRODUCER;
-		default:
-			return SpanKind.INTERNAL;
-	}
+	return SPAN_KINDS.get(nodeType) ?? SpanKind.INTERNAL;
 }
 
 function buildCommonAttributes(
@@ -2044,6 +2054,171 @@ function storeFakeChildSpan(
 	return fakeSpan as unknown as Span;
 }
 
+function resolveNodeSubflow(
+	RED: RuntimeApi,
+	nodeDefinition: RuntimeNodeDef,
+	runtimeNode: RuntimeRedNodeInstance | undefined,
+	flowName: string | undefined,
+) {
+	const subflowId = getSubflowIdFromType(nodeDefinition.type);
+	if (subflowId) {
+		return {
+			subflowId,
+			subflowName:
+				resolveSubflowNameById(RED, subflowId) ||
+				getSubflowNameFromRuntimeNode(runtimeNode),
+			parentFlowId: nodeDefinition.z || runtimeNode?._flow?.id,
+			parentFlowName: flowName,
+		};
+	}
+	const containing = getContainingSubflow(RED, nodeDefinition);
+	return {
+		subflowId: containing?.id,
+		subflowName: containing?.name,
+		parentFlowId: undefined,
+		parentFlowName: undefined,
+	};
+}
+
+function buildSpanMetadata(
+	RED: RuntimeApi,
+	msgId: string,
+	nodeDefinition: RuntimeNodeDef,
+) {
+	const nodeName = getResolvedNodeName(RED, nodeDefinition);
+	const runtimeNode = getRuntimeNode(RED, nodeDefinition.id);
+	const spanName =
+		nodeDefinition.type.startsWith("subflow:") && nodeName
+			? `${nodeDefinition.type} ${nodeName}`
+			: (nodeName ?? nodeDefinition.type);
+	const flowName =
+		getFlowOrSubflowName(RED, nodeDefinition.z) ||
+		getFlowNameFromRuntimeNode(runtimeNode);
+	const subflow = resolveNodeSubflow(
+		RED,
+		nodeDefinition,
+		runtimeNode,
+		flowName,
+	);
+	const commonAttributes = buildCommonAttributes(
+		msgId,
+		nodeDefinition,
+		nodeName,
+		flowName,
+		subflow.subflowId,
+		subflow.subflowName,
+		subflow.parentFlowId,
+		subflow.parentFlowName,
+	);
+	return { spanName, commonAttributes };
+}
+
+function hasExistingChildSpan(
+	msgId: string,
+	spanId: string,
+	parent: MessageSpanRecord | undefined,
+): boolean {
+	return Boolean(msgSpans.has(msgId) && parent?.spans.has(spanId));
+}
+
+function resolveSpanStart(
+	tracer: Tracer,
+	msg: RuntimeMessage,
+	msgId: string,
+	nodeDefinition: RuntimeNodeDef,
+	metadata: ReturnType<typeof buildSpanMetadata>,
+	kind: SpanKind,
+	now: number,
+	existingParent: MessageSpanRecord | undefined,
+): { context: Context; parentSpan?: Span } {
+	if (existingParent)
+		return { context: resolveParentContext(msgId, existingParent) };
+	const created = createAndStoreParentSpan(
+		tracer,
+		msg,
+		msgId,
+		metadata.spanName,
+		nodeDefinition,
+		kind,
+		metadata.commonAttributes,
+		now,
+	);
+	pluginLog("debug", `=> Created parent span for ${nodeDefinition.type}`);
+	return created;
+}
+
+function startChildSpan(
+	tracer: Tracer,
+	msg: RuntimeMessage,
+	nodeDefinition: RuntimeNodeDef,
+	metadata: ReturnType<typeof buildSpanMetadata>,
+	kind: SpanKind,
+	ctx: Context,
+	now: number,
+): Span {
+	const localAttributes =
+		nodeDefinition.z && nodeDefinition.type
+			? parseAttribute(false, msg, nodeDefinition.z, nodeDefinition.type)
+			: undefined;
+	pluginLog(
+		"debug",
+		`Local span attributes (start) for ${nodeDefinition.id}, ${nodeDefinition.type}: ${JSON.stringify(localAttributes)}`,
+	);
+	const span = tracer.startSpan(
+		metadata.spanName,
+		{
+			attributes: {
+				[ATTR_CODE_FUNCTION_NAME]: nodeDefinition.type,
+				[ATTR_IS_MESSAGE_CREATION]: false,
+				...metadata.commonAttributes,
+				...localAttributes,
+			},
+			kind,
+		},
+		ctx,
+	) as Span & { _creationTimestamp: number };
+	span._creationTimestamp = now;
+	return span;
+}
+
+function enrichCreatedSpan(
+	span: Span,
+	parentSpan: Span | undefined,
+	msg: RuntimeMessage,
+	nodeDefinition: RuntimeNodeDef,
+	now: number,
+): void {
+	const attributes = buildAutoSpanAttributes(msg, nodeDefinition);
+	span.setAttributes(attributes);
+	if (
+		hasHttpServerContext(msg, nodeDefinition) &&
+		msg.otelStartTime === undefined
+	)
+		msg.otelStartTime = now;
+	if (!parentSpan) return;
+	parentSpan.setAttributes(attributes);
+	if (typeof attributes[ATTR_URL_PATH] === "string") {
+		const parent = parentSpan as Span & OTelSpanExtension;
+		parent.updateName?.(`${parent.name ?? ""} ${attributes[ATTR_URL_PATH]}`);
+	}
+}
+
+function storeChildSpan(
+	msgId: string,
+	spanId: string,
+	span: Span,
+	nodeDefinition: RuntimeNodeDef,
+	now: number,
+): void {
+	const parent = msgSpans.get(msgId);
+	parent?.spans.set(spanId, span);
+	if (!parent) return;
+	parent.updateTimestamp = now;
+	const currentType = nodeDefinition.type;
+	if (currentType && isSubflowNodeType(currentType))
+		activateSubflowSpan(msgId, spanId);
+}
+
 /**
  * Create a span for this node and message
  * @param {RuntimeApi} RED Node-RED runtime object
@@ -2061,65 +2236,16 @@ function createSpan(
 	_node: RuntimeRedNodeInstance | null,
 	isNotTraced: boolean,
 ): Span | undefined {
-	if (!nodeDefinition) {
-		return;
-	}
+	if (!nodeDefinition) return;
 	try {
 		const msgId = getMsgId(msg);
-		if (msgId === undefined) {
-			return;
-		}
+		if (msgId === undefined) return;
 		const spanId = getSpanId(msg, nodeDefinition);
 		const existingParent = msgSpans.get(msgId);
-		if (msgSpans.has(msgId) && existingParent?.spans.has(spanId)) {
-			return;
-		}
-
-		const nodeName = getResolvedNodeName(RED, nodeDefinition);
-		const runtimeNode = RED.nodes?.getNode?.(nodeDefinition.id) as
-			| RuntimeRedNodeInstance
-			| undefined;
-		const spanName =
-			nodeDefinition.type.startsWith("subflow:") && nodeName
-				? `${nodeDefinition.type} ${nodeName}`
-				: (nodeName ?? nodeDefinition.type);
-		const flowName =
-			getFlowOrSubflowName(RED, nodeDefinition.z) ||
-			getFlowNameFromRuntimeNode(runtimeNode);
-
-		let subflowId: string | undefined;
-		let subflowName: string | undefined;
-		let parentFlowId: string | undefined;
-		let parentFlowName: string | undefined;
-
-		const subflowIdFromType = getSubflowIdFromType(nodeDefinition.type);
-		if (subflowIdFromType) {
-			subflowId = subflowIdFromType;
-			subflowName =
-				resolveSubflowNameById(RED, subflowId) ||
-				getSubflowNameFromRuntimeNode(runtimeNode);
-			parentFlowId = nodeDefinition.z || runtimeNode?._flow?.id;
-			parentFlowName = flowName;
-		} else {
-			const containingSubflow = getContainingSubflow(RED, nodeDefinition);
-			if (containingSubflow) {
-				subflowId = containingSubflow.id;
-				subflowName = containingSubflow.name;
-			}
-		}
-
+		if (hasExistingChildSpan(msgId, spanId, existingParent)) return;
+		const metadata = buildSpanMetadata(RED, msgId, nodeDefinition);
 		const now = Date.now();
 		const kind = resolveSpanKind(nodeDefinition.type);
-		const commonAttributes = buildCommonAttributes(
-			msgId,
-			nodeDefinition,
-			nodeName,
-			flowName,
-			subflowId,
-			subflowName,
-			parentFlowId,
-			parentFlowName,
-		);
 		if (isNotTraced && !existingParent) {
 			pluginLog(
 				"debug",
@@ -2127,85 +2253,56 @@ function createSpan(
 			);
 			return;
 		}
-		let parentSpan: Span | undefined;
-		let ctx: Context | undefined =
-			existingParent && resolveParentContext(msgId, existingParent);
-		if (!existingParent) {
-			const createdParent = createAndStoreParentSpan(
-				tracer,
-				msg,
-				msgId,
-				spanName,
-				nodeDefinition,
-				kind,
-				commonAttributes,
-				now,
-			);
-			parentSpan = createdParent.parentSpan;
-			ctx = createdParent.context;
-			pluginLog("debug", `=> Created parent span for ${nodeDefinition.type}`);
-		}
-
-		if (isNotTraced) {
-			return storeFakeChildSpan(msgId, spanId, nodeDefinition, now);
-		}
-		const localAttributes =
-			nodeDefinition.z && nodeDefinition.type
-				? parseAttribute(false, msg, nodeDefinition.z, nodeDefinition.type)
-				: undefined;
-		pluginLog(
-			"debug",
-			`Local span attributes (start) for ${nodeDefinition.id}, ${nodeDefinition.type}: ${JSON.stringify(localAttributes)}`,
+		const start = resolveSpanStart(
+			tracer,
+			msg,
+			msgId,
+			nodeDefinition,
+			metadata,
+			kind,
+			now,
+			existingParent,
 		);
-		const span = tracer.startSpan(
-			spanName,
-			{
-				attributes: {
-					[ATTR_CODE_FUNCTION_NAME]: nodeDefinition.type,
-					[ATTR_IS_MESSAGE_CREATION]: false,
-					...commonAttributes,
-					...localAttributes,
-				},
-				kind,
-			},
-			ctx,
-		) as Span & { _creationTimestamp: number };
-		span._creationTimestamp = now;
-
-		const autoAttributes = buildAutoSpanAttributes(msg, nodeDefinition);
-		span.setAttributes(autoAttributes);
-		if (
-			hasHttpServerContext(msg, nodeDefinition) &&
-			msg.otelStartTime === undefined
-		) {
-			msg.otelStartTime = now;
-		}
-		if (parentSpan !== undefined) {
-			parentSpan.setAttributes(autoAttributes);
-			if (typeof autoAttributes[ATTR_URL_PATH] === "string") {
-				const parentSpanExt = parentSpan as Span & OTelSpanExtension;
-				parentSpanExt.updateName?.(
-					`${parentSpanExt.name ?? ""} ${autoAttributes[ATTR_URL_PATH]}`,
-				);
-			}
-		}
-
+		if (isNotTraced)
+			return storeFakeChildSpan(msgId, spanId, nodeDefinition, now);
+		const span = startChildSpan(
+			tracer,
+			msg,
+			nodeDefinition,
+			metadata,
+			kind,
+			start.context,
+			now,
+		);
+		enrichCreatedSpan(span, start.parentSpan, msg, nodeDefinition, now);
 		pluginLog("debug", `=> Created span for ${nodeDefinition.type}`);
-
-		// store child span
-		const parent = msgSpans.get(msgId);
-		parent?.spans.set(spanId, span);
-		if (parent) {
-			parent.updateTimestamp = now;
-			const currentType = nodeDefinition.type;
-			if (currentType && isSubflowNodeType(currentType)) {
-				activateSubflowSpan(msgId, spanId);
-			}
-		}
+		storeChildSpan(msgId, spanId, span, nodeDefinition, now);
 		return span;
 	} catch (error) {
 		pluginLog("error", "An error occurred during span creation", error);
 	}
+}
+
+function canRecordHttpResponseMetrics(
+	msgId: string,
+	msg: RuntimeMessage,
+	nodeDefinition: RuntimeNodeDef,
+): boolean {
+	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) return false;
+	if (!hasHttpResponseContext(msg)) return false;
+	if (completedHttpMetricsMsgIds.has(msgId) || msg.otelHttpMetricsRecorded)
+		return false;
+	return true;
+}
+
+function httpMetricAttributes(
+	msg: RuntimeMessage,
+): Record<string, string | number> {
+	return {
+		[ATTR_HTTP_RESPONSE_STATUS_CODE]: msg.res?._res?.statusCode ?? 0,
+		[ATTR_HTTP_REQUEST_METHOD]: msg.req?.method ?? "",
+		[ATTR_URL_PATH]: msg.req?.path ?? "",
+	};
 }
 
 function recordHttpResponseMetricsIfNeeded(
@@ -2214,31 +2311,14 @@ function recordHttpResponseMetricsIfNeeded(
 	nodeDefinition: RuntimeNodeDef,
 	parentSpan?: Span,
 ): void {
-	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) {
-		return;
-	}
-	if (!hasHttpResponseContext(msg)) {
-		return;
-	}
-	if (completedHttpMetricsMsgIds.has(msgId) || msg.otelHttpMetricsRecorded) {
-		return;
-	}
-	if (!sharedState.metrics.requestDuration || !msg.otelStartTime) {
-		return;
-	}
+	if (!canRecordHttpResponseMetrics(msgId, msg, nodeDefinition)) return;
+	const histogram = sharedState.metrics.requestDuration;
+	if (!histogram || !msg.otelStartTime) return;
 	const duration = Date.now() - msg.otelStartTime;
 	const metricContext = parentSpan
 		? trace.setSpan(context.active(), parentSpan)
 		: context.active();
-	sharedState.metrics.requestDuration.record(
-		duration,
-		{
-			[ATTR_HTTP_RESPONSE_STATUS_CODE]: msg.res?._res?.statusCode ?? 0,
-			[ATTR_HTTP_REQUEST_METHOD]: msg.req?.method ?? "",
-			[ATTR_URL_PATH]: msg.req?.path ?? "",
-		},
-		metricContext,
-	);
+	histogram.record(duration, httpMetricAttributes(msg), metricContext);
 	completedHttpMetricsMsgIds.set(msgId, Date.now());
 	msg.otelHttpMetricsRecorded = true;
 }
@@ -2345,6 +2425,32 @@ function applyLocalEndAttributes(
 	);
 }
 
+function completedHttpStatus(
+	statusCode: number,
+	hasError: boolean,
+): SpanStatusCode | undefined {
+	if (statusCode >= 400) return SpanStatusCode.ERROR;
+	if (statusCode >= 200 && statusCode < 300 && !hasError)
+		return SpanStatusCode.OK;
+	return undefined;
+}
+
+function applyServerResponseStatus(
+	parentSpan: Span,
+	span: Span | undefined,
+	statusCode: unknown,
+	hasError: boolean,
+): void {
+	if (typeof statusCode !== "number") return;
+	const status = completedHttpStatus(statusCode, hasError);
+	if (status !== undefined) {
+		span?.setStatus({ code: status });
+		parentSpan.setStatus({ code: status });
+	}
+	span?.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, statusCode);
+	parentSpan.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, statusCode);
+}
+
 function applyHttpResponseCompletion(
 	msgId: string,
 	parent: { parentSpan: Span; spans: Map<string, Span> },
@@ -2353,27 +2459,15 @@ function applyHttpResponseCompletion(
 	nodeDefinition: RuntimeNodeDef,
 	hasError: boolean,
 ): void {
-	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) {
-		return;
-	}
-	if (!hasHttpResponseContext(msg)) {
-		return;
-	}
-	if (completedHttpResponseMsgIds.has(msgId)) {
-		return;
-	}
-	const statusCode = msg.res?._res?.statusCode;
-	if (typeof statusCode === "number") {
-		if (statusCode >= 400) {
-			span?.setStatus({ code: SpanStatusCode.ERROR });
-			parent.parentSpan.setStatus({ code: SpanStatusCode.ERROR });
-		} else if (statusCode >= 200 && statusCode < 300 && !hasError) {
-			span?.setStatus({ code: SpanStatusCode.OK });
-			parent.parentSpan.setStatus({ code: SpanStatusCode.OK });
-		}
-		span?.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, statusCode);
-		parent.parentSpan.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, statusCode);
-	}
+	if (!shouldHandleTerminalHttpResponse(msg, nodeDefinition)) return;
+	if (!hasHttpResponseContext(msg)) return;
+	if (completedHttpResponseMsgIds.has(msgId)) return;
+	applyServerResponseStatus(
+		parent.parentSpan,
+		span,
+		msg.res?._res?.statusCode,
+		hasError,
+	);
 	completedHttpResponseMsgIds.set(msgId, Date.now());
 }
 
@@ -2429,6 +2523,26 @@ function cleanupOrphanSpansIfNeeded(
 	completedHttpResponseMsgIds.delete(msgId);
 }
 
+function applyEndFlowName(
+	RED: RuntimeApi,
+	nodeDefinition: RuntimeNodeDef,
+	span: Span | undefined,
+): void {
+	const runtimeNode = getRuntimeNode(RED, nodeDefinition.id);
+	const flowName =
+		getFlowOrSubflowName(RED, nodeDefinition.z) ||
+		getFlowNameFromRuntimeNode(runtimeNode);
+	if (flowName) span?.setAttribute(ATTR_FLOW_NAME, flowName);
+}
+
+function endChildSpan(span: Span | undefined): void {
+	try {
+		span?.end();
+	} catch (error) {
+		pluginLog("warn", "An error occurred while ending child span", error);
+	}
+}
+
 /**
  * Ends the span for this node and message
  * @param {RuntimeApi} RED Node-RED runtime object
@@ -2458,15 +2572,7 @@ function endSpan(
 			return;
 		}
 		const { parent, span } = spanContext;
-		const runtimeNode = RED.nodes?.getNode?.(nodeDefinition.id) as
-			| RuntimeRedNodeInstance
-			| undefined;
-		const flowName =
-			getFlowOrSubflowName(RED, nodeDefinition.z) ||
-			getFlowNameFromRuntimeNode(runtimeNode);
-		if (flowName) {
-			span?.setAttribute(ATTR_FLOW_NAME, flowName);
-		}
+		applyEndFlowName(RED, nodeDefinition, span);
 		applyClientResponseAttributes(span, msg);
 		const hasError = applyErrorToSpan(span, parent, error, msg);
 		applyLocalEndAttributes(span, msg, nodeDefinition);
@@ -2478,11 +2584,7 @@ function endSpan(
 			nodeDefinition,
 			hasError,
 		);
-		try {
-			span?.end();
-		} catch (endError) {
-			pluginLog("warn", "An error occurred while ending child span", endError);
-		}
+		endChildSpan(span);
 		const currentSpanCreationTimestamp = (span as Span & OTelSpanExtension)
 			?._creationTimestamp;
 		pluginLog(
@@ -2678,7 +2780,7 @@ function initializeLoggerProvider(
 					})();
 	const loggerProvider = new LoggerProvider({
 		resource: commonResource,
-		processors: [new BatchLogRecordProcessor(logExporter)],
+		processors: [new BatchLogRecordProcessor({ exporter: logExporter })],
 	});
 	let selectedLoggerProvider: unknown;
 	try {
@@ -2697,6 +2799,45 @@ function initializeLoggerProvider(
 	}
 	sharedState.loggerProvider = loggerProvider;
 	sharedState.logger = loggerProvider.getLogger(name, version);
+}
+
+function injectDestinationTraceContext(
+	msg: RuntimeMessage,
+	destination: RuntimeNodeDef,
+	span: Span | undefined,
+): void {
+	if (
+		!span ||
+		!sharedState.propagateHeaderNodeTypesList.includes(
+			normalizeNodeType(destination.type),
+		)
+	)
+		return;
+	const isHttpRequest = normalizeNodeType(destination.type) === "http request";
+	const ctx = trace.setSpan(context.active(), span);
+	if (isHttpRequest) discardUnchangedNodeRedHttpResponseHeaders(msg);
+	resolvePropagationCarriers(msg).forEach((carrier) => {
+		clearPropagationFields(carrier);
+		propagator.inject(ctx, carrier, defaultTextMapSetter);
+		mirrorTraceContextAliases(carrier);
+	});
+}
+
+function isBranchSource(node: RuntimeNodeDef): boolean {
+	return node.type === "switch" || node.type.startsWith("subflow");
+}
+
+function endBranchSourceSpan(event: RuntimeHookEvent): void {
+	const source = event.source?.node;
+	if (!source || !isBranchSource(source)) return;
+	const msgId = getMsgId(event.msg);
+	const spanId = getSpanId(event.msg, source);
+	const parent = msgSpans.get(msgId);
+	if (!parent?.spans.has(spanId)) return;
+	pluginLog("debug", `Switch or subflow span ${spanId} will be ended`);
+	parent.spans.get(spanId)?.end();
+	parent.spans.delete(spanId);
+	if (isSubflowNodeType(source.type)) deactivateSubflowSpan(msgId, spanId);
 }
 
 function registerRuntimeHooks(RED: RuntimeApi): void {
@@ -2756,51 +2897,17 @@ function registerRuntimeHooks(RED: RuntimeApi): void {
 	RED.hooks.add("postDeliver.otel", (sendEvent: RuntimeHookEvent) => {
 		logEvent(RED, null, "4.postDeliver", sendEvent);
 		if (!sharedState.tracer || !sendEvent.destination?.node) return;
-
+		const destination = sendEvent.destination.node;
 		const span = createSpan(
 			RED,
 			sharedState.tracer,
 			sendEvent.msg,
-			sendEvent.destination.node,
+			destination,
 			null,
-			shouldSkipNodeType(sendEvent.destination.node.type),
+			shouldSkipNodeType(destination.type),
 		);
-		if (
-			span &&
-			sendEvent.destination.node &&
-			sharedState.propagateHeaderNodeTypesList.includes(
-				normalizeNodeType(sendEvent.destination.node.type),
-			)
-		) {
-			const isHttpRequestDestination =
-				normalizeNodeType(sendEvent.destination.node.type) === "http request";
-			const ctx = trace.setSpan(context.active(), span);
-			if (isHttpRequestDestination) {
-				discardUnchangedNodeRedHttpResponseHeaders(sendEvent.msg);
-			}
-			resolvePropagationCarriers(sendEvent.msg).forEach((carrier) => {
-				clearPropagationFields(carrier);
-				propagator.inject(ctx, carrier, defaultTextMapSetter);
-				mirrorTraceContextAliases(carrier);
-			});
-		}
-		if (
-			sendEvent.source?.node &&
-			(sendEvent.source.node.type === "switch" ||
-				sendEvent.source.node.type.startsWith("subflow"))
-		) {
-			const msgId = getMsgId(sendEvent.msg);
-			const spanId = getSpanId(sendEvent.msg, sendEvent.source.node);
-			const parent = msgSpans.get(msgId);
-			if (parent?.spans.has(spanId)) {
-				pluginLog("debug", `Switch or subflow span ${spanId} will be ended`);
-				parent.spans.get(spanId)?.end();
-				parent.spans.delete(spanId);
-				if (isSubflowNodeType(sendEvent.source.node.type)) {
-					deactivateSubflowSpan(msgId, spanId);
-				}
-			}
-		}
+		injectDestinationTraceContext(sendEvent.msg, destination, span);
+		endBranchSourceSpan(sendEvent);
 	});
 
 	RED.hooks.add("postReceive.otel", (sendEvent: RuntimeHookEvent) => {

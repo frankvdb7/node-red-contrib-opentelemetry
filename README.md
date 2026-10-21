@@ -157,6 +157,18 @@ Examples are provided in the [examples/](examples/) directory:
 Import the flow using **Import** (Ctrl-I), then configure the runtime plugin in `settings.js`.
 For a full settings reference, see [docs/plugin-configuration.md](docs/plugin-configuration.md).
 
+## Development
+
+Run `npm ci` to install dependencies, `npm test` for the test suite, and
+`npm run fallow` for the full-project unused-code and dependency check.
+The fallow check also runs in CI. Its configuration declares the runtime plugin,
+tests, dynamically loaded test stubs, and settings example as entry points.
+It uses no suppressions, baselines, exclusions, or rule overrides.
+
+Compiled tests live under `dist/tests` so generated package metadata stays inside
+the build output directory. `npm run pack:check` rebuilds the runtime before
+checking the published package contents.
+
 ## Versioning
 
 This project follows [Semantic Versioning](https://semver.org/). See the [releases](https://github.com/frankvdb7/node-red-contrib-opentelemetry/releases) for the changelog.
