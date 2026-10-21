@@ -169,6 +169,10 @@ Compiled tests live under `dist/tests` so generated package metadata stays insid
 the build output directory. `npm run pack:check` rebuilds the runtime before
 checking the published package contents.
 
+Run `npm run test:integration` with Docker running for real Node-RED, OTLP
+Collector, and HTTP tests. See [the integration suite guide](test/integration/README.md)
+for supported-version selection, container setup, coverage, and tracked TODOs.
+
 ## Versioning
 
 This project follows [Semantic Versioning](https://semver.org/). See the [releases](https://github.com/frankvdb7/node-red-contrib-opentelemetry/releases) for the changelog.
