@@ -30,12 +30,9 @@ jobs:
         run: npm ci
       - name: lint
         run: npm run lint
-      - name: fallow
-        uses: fallow-rs/fallow@v3.34.1
+      - uses: fallow-rs/fallow@v3
         with:
-          command: dead-code
-          auto-changed-since: 'false'
-          diff-filter: nofilter
+          command: audit
       - name: build
         run: npm run build --if-present
       - name: test
