@@ -12,7 +12,7 @@
 		"pack:check": "npm run build && npm pack --dry-run",
 		"test": "npm run build && npm run build:test && node --test \"dist/tests/test/*.test.js\"",
 		"test:cov": "npm run build && npm run build:test && node --test --experimental-test-coverage \"dist/tests/test/*.test.js\"",
-		"fallow": "fallow dead-code",
+		"fallow": "fallow audit",
 		"test:integration": "npm run build && node --test test/integration/*.test.cjs"
 	},
 	"files": [
