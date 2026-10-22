@@ -165,7 +165,9 @@ duplication, complexity, and styling. CI runs the corresponding audit through th
 Fallow action with test coverage.
 The configuration declares the runtime plugin,
 tests, dynamically loaded test stubs, and settings example as entry points.
-It uses no suppressions, baselines, exclusions, or rule overrides.
+Test and mock files are included in duplication checks as well as dead-code and
+health analysis. Generated framework output remains excluded from duplication;
+there are no test exclusions, suppressions, baselines, or rule overrides.
 
 Compiled tests live under `dist/tests` so generated package metadata stays inside
 the build output directory. `npm run pack:check` rebuilds the runtime before
