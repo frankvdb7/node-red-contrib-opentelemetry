@@ -3,7 +3,22 @@
 	"entry": [
 		"src/plugins/opentelemetry-runtime.ts",
 		"test/**/*.test.ts",
+		"test/integration/*.test.cjs",
 		"examples/opentelemetry.settings.example.js",
 		"test/stubs/*.cjs"
-	]
+	],
+	"duplicates": {
+		"ignoreDefaults": false,
+		"ignore": [
+			"**/.next/**",
+			"**/.nuxt/**",
+			"**/.svelte-kit/**",
+			"**/.turbo/**",
+			"**/.parcel-cache/**",
+			"**/.vite/**",
+			"**/.cache/**",
+			"**/out/**",
+			"**/storybook-static/**"
+		]
+	}
 }

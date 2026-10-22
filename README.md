@@ -160,14 +160,22 @@ For a full settings reference, see [docs/plugin-configuration.md](docs/plugin-co
 ## Development
 
 Run `npm ci` to install dependencies, `npm test` for the test suite, and
-`npm run fallow` for the full-project unused-code and dependency check.
-The fallow check also runs in CI. Its configuration declares the runtime plugin,
+`npm run fallow` for a combined audit of changed files covering dead code,
+duplication, complexity, and styling. CI runs the corresponding audit through the
+Fallow action with test coverage.
+The configuration declares the runtime plugin,
 tests, dynamically loaded test stubs, and settings example as entry points.
-It uses no suppressions, baselines, exclusions, or rule overrides.
+Test and mock files are included in duplication checks as well as dead-code and
+health analysis. Generated framework output remains excluded from duplication;
+there are no test exclusions, suppressions, baselines, or rule overrides.
 
 Compiled tests live under `dist/tests` so generated package metadata stays inside
 the build output directory. `npm run pack:check` rebuilds the runtime before
 checking the published package contents.
+
+Run `npm run test:integration` with Docker running for real Node-RED, OTLP
+Collector, and HTTP tests. See [the integration suite guide](test/integration/README.md)
+for supported-version selection, container setup, coverage, and tracked TODOs.
 
 ## Versioning
 

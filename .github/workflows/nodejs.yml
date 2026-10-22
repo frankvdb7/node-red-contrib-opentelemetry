@@ -46,3 +46,30 @@ jobs:
           coverage: ${{ runner.temp }}/fallow-coverage
       - name: pack-check
         run: npm run pack:check
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-red-version: [4, 5]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+        env:
+          CI: true
+          NODE_RED_VERSION: ${{ matrix.node-red-version }}
+      - name: Upload runtime and collector logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-node-red-${{ matrix.node-red-version }}
+          path: .integration-logs/
+          include-hidden-files: true
+          if-no-files-found: warn
