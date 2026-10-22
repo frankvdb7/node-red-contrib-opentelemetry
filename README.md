@@ -161,7 +161,8 @@ For a full settings reference, see [docs/plugin-configuration.md](docs/plugin-co
 
 Run `npm ci` to install dependencies, `npm test` for the test suite, and
 `npm run fallow` for a combined audit of changed files covering dead code,
-duplication, complexity, and styling. CI runs the same command with test coverage.
+duplication, complexity, and styling. CI runs the corresponding audit through the
+Fallow action with test coverage.
 The configuration declares the runtime plugin,
 tests, dynamically loaded test stubs, and settings example as entry points.
 It uses no suppressions, baselines, exclusions, or rule overrides.

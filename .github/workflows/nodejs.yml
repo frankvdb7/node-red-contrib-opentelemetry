@@ -40,8 +40,10 @@ jobs:
           CI: true
           NODE_OPTIONS: --enable-source-maps
           NODE_V8_COVERAGE: ${{ runner.temp }}/fallow-coverage
-      - name: fallow audit
-        run: npm run fallow -- --coverage "${{ runner.temp }}/fallow-coverage"
+      - uses: fallow-rs/fallow@v3
+        with:
+          command: audit
+          coverage: ${{ runner.temp }}/fallow-coverage
       - name: pack-check
         run: npm run pack:check
 
