@@ -30,6 +30,16 @@ const forTrace = (collector, id = traceId) =>
 async function request(url, options) {
 	return fetch(url, { signal: AbortSignal.timeout(10000), ...options });
 }
+async function completedTrace(collector, description) {
+	await poll(description, () =>
+		forTrace(collector).some(
+			(span) => attributes(span)["node_red.msg.new"] === true,
+		),
+	);
+	const spans = forTrace(collector);
+	assert.equal(new Set(spans.map((span) => span.spanId)).size, spans.length);
+	return spans;
+}
 
 test("packed plugin in real Node-RED", { timeout: 600000 }, async (suite) => {
 	const builtImage = await image(suite);
@@ -88,16 +98,7 @@ test("packed plugin in real Node-RED", { timeout: 600000 }, async (suite) => {
 				},
 			);
 			assert.equal(captured["x-preserved"], "yes");
-			await poll("completed HTTP trace", () =>
-				forTrace(collector).some(
-					(span) => attributes(span)["node_red.msg.new"] === true,
-				),
-			);
-			const spans = forTrace(collector);
-			assert.equal(
-				new Set(spans.map((span) => span.spanId)).size,
-				spans.length,
-			);
+			const spans = await completedTrace(collector, "completed HTTP trace");
 			const root = spans.find(
 				(span) => attributes(span)["node_red.msg.new"] === true,
 			);
@@ -237,16 +238,7 @@ test("packed plugin in real Node-RED", { timeout: 600000 }, async (suite) => {
 			const collector = await receiver(t);
 			const app = await runtime(t, builtImage, collector, branchingFlow());
 			assert.equal((await request(`${app.url}/test`, { headers })).status, 200);
-			await poll("branch trace completion", () =>
-				forTrace(collector).some(
-					(span) => attributes(span)["node_red.msg.new"] === true,
-				),
-			);
-			const spans = forTrace(collector);
-			assert.equal(
-				new Set(spans.map((span) => span.spanId)).size,
-				spans.length,
-			);
+			const spans = await completedTrace(collector, "branch trace completion");
 			for (const id of ["split", "a", "b", "join", "response"]) {
 				assert.ok(
 					spans.some((span) => attributes(span)["node_red.node.name"] === id),
